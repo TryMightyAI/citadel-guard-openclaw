@@ -1332,6 +1332,257 @@ export default function register(api: OpenClawPluginApi) {
   });
 
   // -------------------------------------------------------------------------
+  // Hook: http_request_received (HTTP API inbound scanning)
+  // Protects /v1/chat/completions, /v1/responses endpoints
+  // -------------------------------------------------------------------------
+  api.on("http_request_received", async (event, context) => {
+    const cfg = resolveConfigFromApi(api);
+
+    // Extract content from event
+    const content = event.content?.trim();
+    if (!content) {
+      return undefined;
+    }
+
+    // Extract identifiers from HTTP context
+    const httpContext = context as {
+      requestId?: string;
+      authContext?: { userId?: string; orgId?: string };
+    };
+    const sessionId = sanitizeSessionId(httpContext.requestId);
+    const tenantId = httpContext.authContext?.orgId;
+
+    const result = await scanWithCitadel({
+      text: content,
+      mode: "input",
+      sessionId,
+      tenantId,
+      cfg,
+    });
+
+    if (!result.ok || !result.data) {
+      const { block, reason } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        "http_request_received",
+      );
+      if (block) {
+        return {
+          block: true,
+          blockReason: reason,
+          blockStatusCode: 400,
+        };
+      }
+      return undefined;
+    }
+
+    // Track scan_group_id for linking to output scans (Pro API)
+    if (result.data.scanGroupId && sessionId) {
+      trackScanGroupId(sessionId, result.data.scanGroupId);
+    }
+
+    if (shouldBlockInbound(cfg, result.data)) {
+      return {
+        block: true,
+        blockReason: String(result.data.reason ?? result.data.decision),
+        blockStatusCode: 400,
+      };
+    }
+
+    return undefined;
+  });
+
+  // -------------------------------------------------------------------------
+  // Hook: http_response_sending (HTTP API outbound scanning)
+  // Protects against data exfiltration in API responses
+  // -------------------------------------------------------------------------
+  api.on("http_response_sending", async (event, context) => {
+    const cfg = resolveConfigFromApi(api);
+
+    // Extract content from event
+    const content = event.content?.trim();
+    if (!content) {
+      return undefined;
+    }
+
+    // Skip streaming responses (limitation documented in RFC)
+    if ((event as { isStreaming?: boolean }).isStreaming) {
+      return undefined;
+    }
+
+    // Extract identifiers from HTTP context
+    const httpContext = context as {
+      requestId?: string;
+      authContext?: { userId?: string; orgId?: string };
+    };
+    const sessionId = sanitizeSessionId(httpContext.requestId);
+    const tenantId = httpContext.authContext?.orgId;
+
+    // Get scan_group_id from previous input scan for this session (Pro API)
+    const scanGroupId = getScanGroupId(sessionId);
+
+    const result = await scanWithCitadel({
+      text: content,
+      mode: "output",
+      sessionId,
+      scanGroupId,
+      tenantId,
+      cfg,
+    });
+
+    // Fail-open for outbound to avoid breaking responses
+    if (!result.ok || !result.data) {
+      api.logger.warn?.(
+        `[citadel-guard] http_response_sending scan failed: ${result.error ?? "invalid response"}`,
+      );
+      return undefined;
+    }
+
+    if (shouldBlockOutbound(cfg, result.data)) {
+      return {
+        block: true,
+        blockReason: "Response blocked: potential data leak detected",
+      };
+    }
+
+    return undefined;
+  });
+
+  // -------------------------------------------------------------------------
+  // Hook: http_tool_invoke (HTTP /tools/invoke pre-execution scanning)
+  // -------------------------------------------------------------------------
+  api.on("http_tool_invoke", async (event, context) => {
+    const cfg = resolveConfigFromApi(api);
+
+    const toolName = (event as { toolName?: string }).toolName;
+    if (!toolName) {
+      return undefined;
+    }
+
+    // Extract identifiers from HTTP context
+    const httpContext = context as {
+      requestId?: string;
+      authContext?: { userId?: string; orgId?: string };
+    };
+    const sessionId = sanitizeSessionId(httpContext.requestId);
+    const tenantId = httpContext.authContext?.orgId;
+
+    const isDangerous = DANGEROUS_TOOLS.some((t) =>
+      toolName.toLowerCase().includes(t),
+    );
+    if (!isDangerous && !shouldScanTool(cfg, toolName)) {
+      return undefined;
+    }
+
+    // Get content from event (tool params as JSON string)
+    const content = event.content?.trim();
+    if (!content) {
+      return undefined;
+    }
+
+    const result = await scanWithCitadel({
+      text: content,
+      mode: "input",
+      sessionId,
+      tenantId,
+      cfg,
+    });
+
+    if (!result.ok || !result.data) {
+      if (isDangerous) {
+        // Fail-closed for dangerous tools
+        return {
+          block: true,
+          blockReason: "Security check failed for dangerous tool",
+        };
+      }
+      const { block, reason } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        "http_tool_invoke",
+      );
+      if (block) {
+        return { block: true, blockReason: reason };
+      }
+      return undefined;
+    }
+
+    if (shouldBlockInbound(cfg, result.data)) {
+      api.logger.warn?.(
+        `[citadel-guard] blocked HTTP tool invocation ${toolName}: ${result.data.reason ?? result.data.decision}`,
+      );
+      return {
+        block: true,
+        blockReason: String(
+          result.data.reason ?? result.data.decision ?? "injection_detected",
+        ),
+      };
+    }
+
+    return undefined;
+  });
+
+  // -------------------------------------------------------------------------
+  // Hook: http_tool_result (HTTP /tools/invoke post-execution scanning)
+  // -------------------------------------------------------------------------
+  api.on("http_tool_result", async (event, context) => {
+    const cfg = resolveConfigFromApi(api);
+
+    const toolName = (event as { toolName?: string }).toolName;
+    if (!toolName) {
+      return undefined;
+    }
+
+    if (!shouldScanTool(cfg, toolName)) {
+      return undefined;
+    }
+
+    // Extract identifiers from HTTP context
+    const httpContext = context as {
+      requestId?: string;
+      authContext?: { userId?: string; orgId?: string };
+    };
+    const sessionId = sanitizeSessionId(httpContext.requestId);
+    const tenantId = httpContext.authContext?.orgId;
+
+    // Get content from event (tool result as JSON string)
+    const content = event.content?.trim();
+    if (!content || content.length < 20) {
+      return undefined;
+    }
+
+    const result = await scanWithCitadel({
+      text: content,
+      mode: "input", // Scan tool results as input (could contain indirect injections)
+      sessionId,
+      tenantId,
+      cfg,
+    });
+
+    // Fail-open for tool results to avoid breaking workflows
+    if (!result.ok || !result.data) {
+      api.logger.warn?.(
+        `[citadel-guard] http_tool_result scan failed for ${toolName}: ${result.error ?? "invalid response"}`,
+      );
+      return undefined;
+    }
+
+    if (shouldBlockInbound(cfg, result.data)) {
+      api.logger.warn?.(
+        `[citadel-guard] indirect injection detected in HTTP tool result ${toolName}`,
+      );
+      return {
+        block: true,
+        blockReason: String(
+          result.data.reason ?? result.data.decision ?? "indirect_injection",
+        ),
+      };
+    }
+
+    return undefined;
+  });
+
+  // -------------------------------------------------------------------------
   // Service: citadel-guard-sidecar
   // -------------------------------------------------------------------------
   api.registerService({
