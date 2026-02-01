@@ -1,0 +1,59 @@
+{
+  "name": "@trymightyai/citadel-guard-openclaw",
+  "version": "0.1.0",
+  "description": "Citadel Guard plugin for OpenClaw - AI security protection against prompt injection, data exfiltration, and more",
+  "type": "module",
+  "main": "plugin/index.ts",
+  "exports": {
+    ".": "./plugin/index.ts",
+    "./cache": "./plugin/cache.ts",
+    "./metrics": "./plugin/metrics.ts",
+    "./pro-api": "./plugin/pro-api.ts"
+  },
+  "files": ["plugin/", "README.md", "CHANGELOG.md"],
+  "scripts": {
+    "proxy": "bun run citadel-openai-proxy.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest run tests/",
+    "test:watch": "vitest",
+    "test:live": "vitest run tests/pro-api-live.test.ts",
+    "test:integration": "vitest run tests/integration.test.ts tests/pro-api.test.ts",
+    "test:e2e": "vitest run tests/e2e-proxy.test.ts",
+    "test:cache": "vitest run tests/cache.test.ts",
+    "test:cve": "bash test-cve-patterns.sh",
+    "test:all": "bun run test",
+    "prepublishOnly": "bun run typecheck && bun run lint"
+  },
+  "keywords": [
+    "openclaw",
+    "citadel",
+    "security",
+    "prompt-injection",
+    "ai-safety",
+    "guardrails",
+    "llm-security"
+  ],
+  "author": "Mighty <support@trymighty.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TryMightyAI/citadel-guard-openclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TryMightyAI/citadel-guard-openclaw/issues"
+  },
+  "homepage": "https://trymighty.ai",
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "^1.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.0.0"
+  }
+}

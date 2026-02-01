@@ -1,0 +1,141 @@
+{
+  "id": "citadel-guard",
+  "name": "Citadel Guard",
+  "version": "0.1.0",
+  "description": "AI security protection against prompt injection, data exfiltration, and more. Supports Citadel OSS and Pro.",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "Base URL for Citadel OSS server (e.g. http://127.0.0.1:3000). Ignored when using Pro API key."
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "API key for Citadel Pro (mc_live_* or mc_test_*). Falls back to CITADEL_API_KEY env var."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 50,
+        "default": 2000,
+        "description": "HTTP timeout for scan requests in milliseconds."
+      },
+      "failOpen": {
+        "type": "boolean",
+        "default": false,
+        "description": "When true, allow requests through if Citadel is unavailable. Default is fail-closed (block)."
+      },
+      "cacheEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable caching of scan results to reduce API calls."
+      },
+      "cacheTtlMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "default": 60000,
+        "description": "Cache TTL in milliseconds."
+      },
+      "cacheMaxSize": {
+        "type": "integer",
+        "minimum": 10,
+        "default": 1000,
+        "description": "Maximum number of cached scan results."
+      },
+      "metricsEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable metrics collection."
+      },
+      "metricsLogIntervalMs": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 60000,
+        "description": "Interval for logging metrics summary (0 = disabled)."
+      },
+      "scanSkillsOnStartup": {
+        "type": "boolean",
+        "default": true,
+        "description": "Scan skills directory for injections at startup."
+      },
+      "skillsDirectory": {
+        "type": "string",
+        "description": "Path to skills directory to scan on startup."
+      },
+      "blockOnMaliciousSkills": {
+        "type": "boolean",
+        "default": true,
+        "description": "Refuse to start if malicious skills are detected."
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": false,
+        "description": "Start Citadel OSS as a sidecar process."
+      },
+      "citadelBin": {
+        "type": "string",
+        "description": "Path to the citadel binary (used when autoStart=true)."
+      },
+      "citadelPort": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 3000,
+        "description": "Port for sidecar Citadel process."
+      },
+      "citadelArgs": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Extra arguments passed to the citadel process."
+      },
+      "inboundBlockDecisions": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["BLOCK", "WARN"] },
+        "default": ["BLOCK"],
+        "description": "Citadel decisions that should block inbound messages."
+      },
+      "inboundBlockMessage": {
+        "type": "string",
+        "default": "Request blocked by Citadel (potential prompt injection detected).",
+        "description": "User-facing message when inbound is blocked."
+      },
+      "outboundBlockOnUnsafe": {
+        "type": "boolean",
+        "default": true,
+        "description": "Block/replace outbound replies when Citadel output scan is unsafe."
+      },
+      "outboundBlockMessage": {
+        "type": "string",
+        "default": "Response blocked by Citadel (unsafe output detected).",
+        "description": "User-facing message when outbound is blocked."
+      },
+      "scanToolResults": {
+        "type": "boolean",
+        "default": true,
+        "description": "Scan tool results for indirect injection attacks."
+      },
+      "toolResultBlockMessage": {
+        "type": "string",
+        "default": "Tool result blocked by Citadel (indirect injection detected).",
+        "description": "Message when tool result is sanitized."
+      },
+      "toolsToScan": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [
+          "web_fetch",
+          "Read",
+          "exec",
+          "bash",
+          "mcp_*",
+          "fetch_url",
+          "search_web"
+        ],
+        "description": "Tools to scan for indirect injection. Use * suffix for prefix matching."
+      }
+    }
+  }
+}

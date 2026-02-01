@@ -1,0 +1,9 @@
+{
+  "name": "@citadel/citadel-guard",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Citadel Guard plugin for OpenClaw - true-blocking guardrails",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
