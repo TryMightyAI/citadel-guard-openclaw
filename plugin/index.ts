@@ -11,6 +11,8 @@ import { MetricsCollector } from "./metrics";
 import {
   type NormalizedScanResult,
   type RawScanResult,
+  type MultimodalItem,
+  type ProScanParams,
   isProApiKey,
   requestScanOss,
   requestScanPro,
@@ -278,6 +280,128 @@ function extractTextFromToolResult(result: unknown): string {
   return "";
 }
 
+// ============================================================================
+// Multimodal content extraction
+// ============================================================================
+
+interface ExtractedMultimodal {
+  text: string;
+  images: MultimodalItem[];
+  documents: MultimodalItem[];
+}
+
+/**
+ * Extract text and multimodal content from OpenClaw messages.
+ * Handles OpenAI-style multipart content arrays.
+ */
+function extractMultimodalContent(
+  messages: Array<{ role: string; content: string | unknown }> | undefined,
+): ExtractedMultimodal {
+  const result: ExtractedMultimodal = { text: "", images: [], documents: [] };
+  if (!messages || !Array.isArray(messages)) return result;
+
+  const textParts: string[] = [];
+
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+
+    const role = (msg as { role?: string }).role;
+    // Only scan user/system messages for injection (not assistant responses)
+    if (role !== "user" && role !== "system" && role !== "developer") continue;
+
+    const content = (msg as { content?: unknown }).content;
+
+    if (typeof content === "string") {
+      textParts.push(content);
+      continue;
+    }
+
+    // Handle multipart content array (OpenAI vision format)
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (!part || typeof part !== "object") continue;
+
+        const partObj = part as Record<string, unknown>;
+        const type = partObj.type;
+
+        if (type === "text" && typeof partObj.text === "string") {
+          textParts.push(partObj.text);
+        } else if (type === "image_url" && partObj.image_url) {
+          // Handle image_url with data URL or external URL
+          const imgUrl = partObj.image_url as { url?: string };
+          if (imgUrl.url && imgUrl.url.startsWith("data:")) {
+            // Data URL: data:image/png;base64,<base64data>
+            const match = imgUrl.url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              result.images.push({
+                type: "image",
+                data: match[2],
+                mimeType: match[1],
+              });
+            }
+          }
+          // Note: External URLs are not scanned directly - would need fetch
+        } else if (type === "image" && typeof partObj.data === "string") {
+          // Direct base64 image data
+          result.images.push({
+            type: "image",
+            data: partObj.data,
+            mimeType: (partObj.media_type as string) || "image/png",
+          });
+        } else if (type === "file" || type === "document") {
+          // Document/file content
+          if (typeof partObj.data === "string") {
+            const mimeType =
+              (partObj.media_type as string) ||
+              (partObj.mime_type as string) ||
+              "application/octet-stream";
+            result.documents.push({
+              type: "document",
+              data: partObj.data,
+              mimeType,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  result.text = textParts.join("\n\n");
+  return result;
+}
+
+/**
+ * Extract multimodal content from a request body (HTTP API hooks)
+ */
+function extractMultimodalFromRequestBody(
+  requestBody: Record<string, unknown> | undefined,
+): ExtractedMultimodal {
+  if (!requestBody) {
+    return { text: "", images: [], documents: [] };
+  }
+
+  // Handle OpenAI-style messages array
+  const messages = requestBody.messages as
+    | Array<{ role: string; content: string | unknown }>
+    | undefined;
+  if (messages) {
+    return extractMultimodalContent(messages);
+  }
+
+  // Handle Responses API style (single input field)
+  const input = requestBody.input;
+  if (typeof input === "string") {
+    return { text: input, images: [], documents: [] };
+  }
+  if (Array.isArray(input)) {
+    return extractMultimodalContent(
+      input.map((item) => ({ role: "user", content: item })),
+    );
+  }
+
+  return { text: "", images: [], documents: [] };
+}
+
 function resolveConfigFromApi(api: OpenClawPluginApi): CitadelConfig {
   if (api.pluginConfig) return normalizeConfig(api.pluginConfig);
   const cfg = api.config?.plugins?.entries?.[PLUGIN_ID]?.config;
@@ -391,8 +515,15 @@ async function scanWithCitadel(params: {
   scanGroupId?: string; // For linking output scans to input scans (Pro API)
   tenantId?: string; // For tenant isolation in cache and rate limiting
   cfg: CitadelConfig;
+  // Multimodal content (Pro API only)
+  images?: MultimodalItem[];
+  documents?: MultimodalItem[];
+  // Pro API options
+  analysisMode?: "fast" | "secure" | "comprehensive";
+  profile?: "strict" | "balanced" | "permissive" | "code_assistant" | "ai_safety";
+  originalPrompt?: string; // For output scanning context
 }): Promise<RawScanResult> {
-  const { text, mode, scanGroupId, cfg } = params;
+  const { text, mode, scanGroupId, cfg, images, documents, analysisMode, profile, originalPrompt } = params;
   // Validate and sanitize session ID
   const sessionId = sanitizeSessionId(params.sessionId);
   const tenantId = params.tenantId || "_default_";
@@ -496,6 +627,15 @@ async function scanWithCitadel(params: {
   // Make the actual request with circuit breaker protection
   let result: RawScanResult;
 
+  // Determine content type based on what we're scanning
+  const hasMultimodal =
+    (images && images.length > 0) || (documents && documents.length > 0);
+  const contentType = hasMultimodal
+    ? images && images.length > 0
+      ? "image"
+      : "document"
+    : "text";
+
   try {
     result = await circuitBreaker.execute(async () => {
       if (isPro && apiKey) {
@@ -506,7 +646,20 @@ async function scanWithCitadel(params: {
           scanGroupId,
           apiKey,
           timeoutMs: cfg.timeoutMs,
+          // Multimodal content (Pro API only)
+          contentType: hasMultimodal ? contentType : "text",
+          analysisMode: analysisMode || (hasMultimodal ? "secure" : "fast"),
+          profile: profile || "balanced",
+          images,
+          documents,
+          originalPrompt,
         });
+      }
+      // OSS only supports text - if we have multimodal content, extract text only
+      if (hasMultimodal) {
+        console.warn(
+          "[citadel-guard] OSS mode: multimodal content detected but only text will be scanned",
+        );
       }
       return requestScanOss({
         endpoint: resolveEndpoint(cfg),
@@ -1143,15 +1296,10 @@ export default function register(api: OpenClawPluginApi) {
   // -------------------------------------------------------------------------
   // Hook: http_request_received (HTTP API inbound scanning)
   // Protects /v1/chat/completions, /v1/responses endpoints
+  // Supports MULTIMODAL scanning (images, documents) via Pro API
   // -------------------------------------------------------------------------
   api.on("http_request_received", async (event, context) => {
     const cfg = resolveConfigFromApi(api);
-
-    // Extract content from event
-    const content = event.content?.trim();
-    if (!content) {
-      return undefined;
-    }
 
     // Extract identifiers from HTTP context
     const httpContext = context as {
@@ -1161,12 +1309,33 @@ export default function register(api: OpenClawPluginApi) {
     const sessionId = sanitizeSessionId(httpContext.requestId);
     const tenantId = httpContext.authContext?.orgId;
 
+    // Extract multimodal content from request body (Pro API: images, documents)
+    const requestBody = (event as { requestBody?: Record<string, unknown> })
+      .requestBody;
+    const multimodal = extractMultimodalFromRequestBody(requestBody);
+
+    // Use extracted text or fall back to event.content
+    const textContent = multimodal.text || event.content?.trim() || "";
+
+    // Skip if no content to scan
+    if (!textContent && multimodal.images.length === 0 && multimodal.documents.length === 0) {
+      return undefined;
+    }
+
     const result = await scanWithCitadel({
-      text: content,
+      text: textContent,
       mode: "input",
       sessionId,
       tenantId,
       cfg,
+      // Multimodal content (Pro API only - OSS will only scan text)
+      images: multimodal.images,
+      documents: multimodal.documents,
+      // Use secure mode for multimodal, fast for text-only
+      analysisMode:
+        multimodal.images.length > 0 || multimodal.documents.length > 0
+          ? "secure"
+          : "fast",
     });
 
     if (!result.ok || !result.data) {

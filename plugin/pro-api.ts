@@ -106,34 +106,125 @@ export function normalizeScanResult(
 }
 
 /**
- * Request scan from Pro API
+ * Multimodal content item (image or document)
  */
-export async function requestScanPro(params: {
+export interface MultimodalItem {
+  type: "image" | "document";
+  data: string; // Base64 encoded data
+  mimeType?: string; // e.g., "image/png", "application/pdf"
+}
+
+/**
+ * Pro scan request parameters
+ */
+export interface ProScanParams {
   content: string;
   scanPhase: "input" | "output";
   sessionId?: string;
-  scanGroupId?: string; // Required for output scans to link to input scan
+  scanGroupId?: string;
   apiKey: string;
   timeoutMs: number;
-}): Promise<RawScanResult> {
+  // Multimodal support
+  contentType?: "auto" | "text" | "image" | "pdf" | "document";
+  analysisMode?: "fast" | "secure" | "comprehensive";
+  profile?: "strict" | "balanced" | "permissive" | "code_assistant" | "ai_safety";
+  // Binary content (images, documents)
+  images?: MultimodalItem[];
+  documents?: MultimodalItem[];
+  // Context for output scanning
+  originalPrompt?: string;
+}
+
+/**
+ * Request scan from Pro API (supports multimodal content)
+ */
+export async function requestScanPro(params: ProScanParams): Promise<RawScanResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), params.timeoutMs);
 
   try {
-    const res = await fetch(PRO_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": params.apiKey,
-      },
-      body: JSON.stringify({
-        content: params.content,
-        scan_phase: params.scanPhase,
-        ...(params.sessionId && { session_id: params.sessionId }),
-        ...(params.scanGroupId && { scan_group_id: params.scanGroupId }),
-      }),
-      signal: controller.signal,
-    });
+    // Check if we have binary content to upload
+    const hasBinaryContent =
+      (params.images && params.images.length > 0) ||
+      (params.documents && params.documents.length > 0);
+
+    let res: Response;
+
+    if (hasBinaryContent) {
+      // Use multipart/form-data for binary content
+      const formData = new FormData();
+
+      // Add text content if present
+      if (params.content) {
+        formData.append("content", params.content);
+      }
+
+      // Add scan parameters
+      formData.append("scan_phase", params.scanPhase);
+      formData.append("content_type", params.contentType || "auto");
+      formData.append("analysis_mode", params.analysisMode || "secure");
+      formData.append("profile", params.profile || "balanced");
+
+      if (params.sessionId) {
+        formData.append("session_id", params.sessionId);
+      }
+      if (params.scanGroupId) {
+        formData.append("scan_group_id", params.scanGroupId);
+      }
+      if (params.originalPrompt) {
+        formData.append("original_prompt", params.originalPrompt);
+      }
+
+      // Add first image or document as the primary file
+      if (params.images && params.images.length > 0) {
+        const img = params.images[0];
+        const mimeType = img.mimeType || "image/png";
+        const blob = base64ToBlob(img.data, mimeType);
+        formData.append("file", blob, `image.${mimeType.split("/")[1] || "png"}`);
+        if (!params.contentType || params.contentType === "auto") {
+          formData.append("content_type", "image");
+        }
+      } else if (params.documents && params.documents.length > 0) {
+        const doc = params.documents[0];
+        const mimeType = doc.mimeType || "application/pdf";
+        const blob = base64ToBlob(doc.data, mimeType);
+        const ext = mimeType.includes("pdf") ? "pdf" : "doc";
+        formData.append("file", blob, `document.${ext}`);
+        if (!params.contentType || params.contentType === "auto") {
+          formData.append("content_type", mimeType.includes("pdf") ? "pdf" : "document");
+        }
+      }
+
+      res = await fetch(PRO_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "X-API-Key": params.apiKey,
+          // Note: Don't set Content-Type for FormData - browser sets it with boundary
+        },
+        body: formData,
+        signal: controller.signal,
+      });
+    } else {
+      // Use JSON for text-only content
+      res = await fetch(PRO_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": params.apiKey,
+        },
+        body: JSON.stringify({
+          content: params.content,
+          scan_phase: params.scanPhase,
+          content_type: params.contentType || "text",
+          analysis_mode: params.analysisMode || "secure",
+          profile: params.profile || "balanced",
+          ...(params.sessionId && { session_id: params.sessionId }),
+          ...(params.scanGroupId && { scan_group_id: params.scanGroupId }),
+          ...(params.originalPrompt && { original_prompt: params.originalPrompt }),
+        }),
+        signal: controller.signal,
+      });
+    }
 
     if (res.status === 401) {
       return {
@@ -166,6 +257,21 @@ export async function requestScanPro(params: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Convert base64 string to Blob for multipart upload
+ */
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  // Remove data URL prefix if present
+  const base64Data = base64.includes(",") ? base64.split(",")[1] : base64;
+  const byteCharacters = atob(base64Data);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  return new Blob([byteArray], { type: mimeType });
 }
 
 /**
