@@ -220,18 +220,20 @@ These hooks protect messages through Telegram, Discord, Slack, etc.:
 
 > **Note:** `message_received` and `message_sending` are [planned but not yet implemented](https://docs.openclaw.ai/hooks) in OpenClaw. Tool-related hooks ARE active and provide protection for indirect injection via tool results.
 
-### HTTP API Hooks (OpenClaw PR #6099)
+### HTTP API Hooks (Coming Soon)
 
-If you're using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099) merged, these additional hooks provide **native HTTP API protection without the proxy**:
+We've submitted [PR #6405](https://github.com/openclaw/openclaw/pull/6405) to OpenClaw adding HTTP API hooks. Once merged, these hooks will provide **native HTTP API protection without the proxy**:
 
-| Hook | Status | What it does |
-|------|--------|--------------|
-| `http_request_received` | ✅ Conditional | Scans `/v1/chat/completions`, `/v1/responses` requests |
-| `http_response_sending` | ✅ Conditional | Scans LLM responses for data exfiltration |
-| `http_tool_invoke` | ✅ Conditional | Scans `/tools/invoke` arguments |
-| `http_tool_result` | ✅ Conditional | Scans tool results for indirect injection |
+| Hook | What it does |
+|------|--------------|
+| `http_request_received` | Scans `/v1/chat/completions`, `/v1/responses` requests |
+| `http_response_sending` | Scans LLM responses for data exfiltration |
+| `http_tool_invoke` | Scans `/tools/invoke` arguments |
+| `http_tool_result` | Scans tool results for indirect injection |
 
-**Backward Compatible:** These hooks are registered conditionally. If OpenClaw doesn't support them, the plugin gracefully degrades to messaging hooks + proxy protection.
+**Status:** The plugin support for these hooks is ready in the [`feat/http-api-hooks`](https://github.com/TryMightyAI/citadel-guard-openclaw/tree/feat/http-api-hooks) branch. Once OpenClaw merges PR #6405, we'll merge this branch to main.
+
+**Until then:** Use the [Citadel Proxy](#option-b-citadel-proxy-recommended-for-http-apis) for HTTP API protection.
 
 ### HTTP API (Requires Proxy)
 
@@ -569,8 +571,14 @@ The proxy listens on port 5050 by default.
 | `CITADEL_URL` | `http://127.0.0.1:3333` | Citadel scanner URL |
 | `UPSTREAM_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway URL |
 | `UPSTREAM_TOKEN` | - | Bearer token for upstream |
+| `PROXY_HOST` | `127.0.0.1` | Host interface to bind the proxy |
 | `PROXY_PORT` | `5050` | Port for the proxy |
 | `SCAN_OUTPUT` | `true` | Also scan LLM responses |
+| `FAIL_OPEN` | `false` | Allow requests when Citadel is unavailable |
+| `SCAN_TIMEOUT_MS` | `2000` | Timeout for Citadel scan requests |
+| `MAX_BODY_BYTES` | `1048576` | Max request body size accepted by proxy |
+| `SCAN_SYSTEM_MESSAGES` | `true` | Also scan `system` role messages |
+| `SCAN_DEVELOPER_MESSAGES` | `true` | Also scan `developer` role messages |
 
 ### What It Protects
 

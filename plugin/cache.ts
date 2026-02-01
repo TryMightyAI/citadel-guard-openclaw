@@ -5,6 +5,8 @@
  * Uses a simple Map-based LRU implementation with time-based expiration.
  */
 
+import { createHash } from "node:crypto";
+
 export interface CacheEntry<T> {
   value: T;
   expiresAt: number;
@@ -21,15 +23,10 @@ export class LRUCache<T> {
   }
 
   /**
-   * Generate a hash key from input parameters using FNV-1a
+   * Generate a hash key from input parameters using SHA-256
    */
   private hash(input: string): string {
-    let hash = 2166136261;
-    for (let i = 0; i < input.length; i++) {
-      hash ^= input.charCodeAt(i);
-      hash = (hash * 16777619) >>> 0;
-    }
-    return hash.toString(36);
+    return createHash("sha256").update(input).digest("hex");
   }
 
   /**
