@@ -10,7 +10,7 @@ Citadel Guard is a security plugin for [OpenClaw](https://github.com/openclaw/op
 
 **OpenClaw's plugin hooks do NOT cover the HTTP API endpoints** in the current release. The following are completely unprotected by plugins alone:
 
-| Endpoint | Current Status | With PR #6099 |
+| Endpoint | Current Status | With PR #6405 |
 |----------|----------------|---------------|
 | `/v1/chat/completions` | **BYPASSES HOOKS** | ✅ Protected |
 | `/v1/responses` | **BYPASSES HOOKS** | ✅ Protected |
@@ -18,7 +18,7 @@ Citadel Guard is a security plugin for [OpenClaw](https://github.com/openclaw/op
 
 ### Full Protection Setup
 
-**If using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099):** HTTP API hooks are automatically registered. No additional setup needed.
+**If using OpenClaw with [PR #6405](https://github.com/openclaw/openclaw/pull/6405):** HTTP API hooks are automatically registered. No additional setup needed.
 
 **If using current OpenClaw release:** You **MUST** also run the Citadel OpenAI Proxy:
 
@@ -535,19 +535,19 @@ bun run lint:fix     # Auto-fix lint issues
 
 OpenClaw's HTTP API (`/v1/chat/completions`, `/v1/responses`, `/tools/invoke`) **bypasses all plugin hooks** in the current release. To protect these endpoints, you have two options:
 
-### Option 1: Native Hooks (OpenClaw PR #6099)
+### Option 1: Native Hooks (OpenClaw PR #6405)
 
-If you're using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099) merged, **no proxy is needed**. The plugin automatically registers HTTP API hooks:
+If you're using OpenClaw with [PR #6405](https://github.com/openclaw/openclaw/pull/6405) merged, **no proxy is needed**. The plugin automatically registers HTTP API hooks:
 
 ```
-[citadel-guard] Registered 4/4 HTTP API hooks (OpenClaw PR #6099)
+[citadel-guard] Registered 4/4 HTTP API hooks (OpenClaw PR #6405)
 ```
 
 If you see this log message, HTTP API protection is active natively.
 
 ### Option 2: Proxy (Current OpenClaw)
 
-For current OpenClaw releases without PR #6099, run the included proxy.
+For current OpenClaw releases without PR #6405, run the included proxy.
 
 ### Setup
 
