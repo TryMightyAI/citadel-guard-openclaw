@@ -8,17 +8,19 @@ Citadel Guard is a security plugin for [OpenClaw](https://github.com/openclaw/op
 
 ## ⚠️ CRITICAL: HTTP API Protection
 
-**OpenClaw's plugin hooks do NOT cover the HTTP API endpoints.** The following are completely unprotected by plugins alone:
+**OpenClaw's plugin hooks do NOT cover the HTTP API endpoints** in the current release. The following are completely unprotected by plugins alone:
 
-| Endpoint | Hook Status | Risk |
-|----------|-------------|------|
-| `/v1/chat/completions` | **BYPASSES ALL HOOKS** | Direct LLM access |
-| `/v1/responses` | **BYPASSES ALL HOOKS** | Direct LLM access |
-| `/tools/invoke` | **BYPASSES ALL HOOKS** | Direct tool execution |
+| Endpoint | Current Status | With PR #6099 |
+|----------|----------------|---------------|
+| `/v1/chat/completions` | **BYPASSES HOOKS** | ✅ Protected |
+| `/v1/responses` | **BYPASSES HOOKS** | ✅ Protected |
+| `/tools/invoke` | **BYPASSES HOOKS** | ✅ Protected |
 
 ### Full Protection Setup
 
-For complete protection, you **MUST** also run the Citadel OpenAI Proxy:
+**If using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099):** HTTP API hooks are automatically registered. No additional setup needed.
+
+**If using current OpenClaw release:** You **MUST** also run the Citadel OpenAI Proxy:
 
 ```bash
 # Start the proxy (intercepts all HTTP API calls)
@@ -218,6 +220,19 @@ These hooks protect messages through Telegram, Discord, Slack, etc.:
 
 > **Note:** `message_received` and `message_sending` are [planned but not yet implemented](https://docs.openclaw.ai/hooks) in OpenClaw. Tool-related hooks ARE active and provide protection for indirect injection via tool results.
 
+### HTTP API Hooks (OpenClaw PR #6099)
+
+If you're using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099) merged, these additional hooks provide **native HTTP API protection without the proxy**:
+
+| Hook | Status | What it does |
+|------|--------|--------------|
+| `http_request_received` | ✅ Conditional | Scans `/v1/chat/completions`, `/v1/responses` requests |
+| `http_response_sending` | ✅ Conditional | Scans LLM responses for data exfiltration |
+| `http_tool_invoke` | ✅ Conditional | Scans `/tools/invoke` arguments |
+| `http_tool_result` | ✅ Conditional | Scans tool results for indirect injection |
+
+**Backward Compatible:** These hooks are registered conditionally. If OpenClaw doesn't support them, the plugin gracefully degrades to messaging hooks + proxy protection.
+
 ### HTTP API (Requires Proxy)
 
 The plugin hooks **DO NOT** fire for direct HTTP API calls. You must use the proxy:
@@ -256,6 +271,57 @@ The plugin hooks **DO NOT** fire for direct HTTP API calls. You must use the pro
 - **You need to detect sophisticated multi-turn attacks** → Pro (advanced ML)
 - **You want zero infrastructure to manage** → Pro (hosted)
 - **You're in development or have air-gapped requirements** → OSS works great
+
+---
+
+## Multimodal Scanning (Pro)
+
+Citadel Pro scans **images, PDFs, and documents** for embedded attacks that bypass text-only detection.
+
+### What Gets Scanned
+
+| Content Type | Detection | Examples |
+|--------------|-----------|----------|
+| **Images** | OCR + vision analysis | Screenshots with hidden instructions, photos of text |
+| **PDFs** | Text extraction + layout analysis | Documents with injection in headers/footers |
+| **Office Docs** | Content extraction | Word/Excel with embedded malicious content |
+| **QR Codes** | Decode + scan payload | QR codes linking to injection payloads |
+
+### How It Works
+
+When you send messages with images or documents via the OpenAI-compatible API, Citadel Guard automatically extracts and scans multimodal content:
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "What does this say?" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+      ]
+    }
+  ]
+}
+```
+
+The plugin:
+1. Extracts text from the message
+2. Extracts images (base64 or URLs)
+3. Sends both to Citadel Pro for unified scanning
+4. Blocks if injection detected in text OR image
+
+### Visual Attack Examples
+
+These attacks are caught by Pro's multimodal scanning:
+
+| Attack | Blocked? |
+|--------|----------|
+| Screenshot of "Ignore all instructions" | ✅ Yes |
+| PDF with hidden text layer | ✅ Yes |
+| Image with text rendered in unusual fonts | ✅ Yes |
+| QR code linking to malicious prompt | ✅ Yes |
+| Steganography (hidden data in image) | ✅ Yes |
 
 ---
 
@@ -465,7 +531,21 @@ bun run lint:fix     # Auto-fix lint issues
 
 ## HTTP API Protection (Proxy)
 
-OpenClaw's HTTP API (`/v1/chat/completions`, `/v1/responses`, `/tools/invoke`) **bypasses all plugin hooks**. To protect these endpoints, run the included proxy.
+OpenClaw's HTTP API (`/v1/chat/completions`, `/v1/responses`, `/tools/invoke`) **bypasses all plugin hooks** in the current release. To protect these endpoints, you have two options:
+
+### Option 1: Native Hooks (OpenClaw PR #6099)
+
+If you're using OpenClaw with [PR #6099](https://github.com/openclaw/openclaw/pull/6099) merged, **no proxy is needed**. The plugin automatically registers HTTP API hooks:
+
+```
+[citadel-guard] Registered 4/4 HTTP API hooks (OpenClaw PR #6099)
+```
+
+If you see this log message, HTTP API protection is active natively.
+
+### Option 2: Proxy (Current OpenClaw)
+
+For current OpenClaw releases without PR #6099, run the included proxy.
 
 ### Setup
 
