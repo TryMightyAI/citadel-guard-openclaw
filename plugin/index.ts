@@ -1293,12 +1293,37 @@ export default function register(api: OpenClawPluginApi) {
     return undefined;
   });
 
+  // =========================================================================
+  // HTTP API Hooks (conditional - requires OpenClaw with HTTP hooks support)
+  // These hooks are registered if OpenClaw supports them (PR #6099)
+  // If not supported, the plugin gracefully degrades to messaging hooks only
+  // =========================================================================
+
+  /**
+   * Safely register a hook - catches errors if hook type unsupported
+   */
+  function safeRegisterHook<T>(
+    hookName: string,
+    handler: (event: T, context: unknown) => Promise<unknown>,
+  ): boolean {
+    try {
+      // @ts-expect-error - hook name may not be in types if OpenClaw doesn't have HTTP hooks
+      api.on(hookName, handler);
+      return true;
+    } catch (err) {
+      // Hook type not supported - OpenClaw version without HTTP hooks
+      return false;
+    }
+  }
+
+  let httpHooksRegistered = 0;
+
   // -------------------------------------------------------------------------
   // Hook: http_request_received (HTTP API inbound scanning)
   // Protects /v1/chat/completions, /v1/responses endpoints
   // Supports MULTIMODAL scanning (images, documents) via Pro API
   // -------------------------------------------------------------------------
-  api.on("http_request_received", async (event, context) => {
+  const httpRequestHandler = async (event: HookEvent, context: unknown) => {
     const cfg = resolveConfigFromApi(api);
 
     // Extract identifiers from HTTP context
@@ -1368,13 +1393,17 @@ export default function register(api: OpenClawPluginApi) {
     }
 
     return undefined;
-  });
+  };
+
+  if (safeRegisterHook("http_request_received", httpRequestHandler)) {
+    httpHooksRegistered++;
+  }
 
   // -------------------------------------------------------------------------
   // Hook: http_response_sending (HTTP API outbound scanning)
   // Protects against data exfiltration in API responses
   // -------------------------------------------------------------------------
-  api.on("http_response_sending", async (event, context) => {
+  const httpResponseHandler = async (event: HookEvent, context: unknown) => {
     const cfg = resolveConfigFromApi(api);
 
     // Extract content from event
@@ -1424,12 +1453,16 @@ export default function register(api: OpenClawPluginApi) {
     }
 
     return undefined;
-  });
+  };
+
+  if (safeRegisterHook("http_response_sending", httpResponseHandler)) {
+    httpHooksRegistered++;
+  }
 
   // -------------------------------------------------------------------------
   // Hook: http_tool_invoke (HTTP /tools/invoke pre-execution scanning)
   // -------------------------------------------------------------------------
-  api.on("http_tool_invoke", async (event, context) => {
+  const httpToolInvokeHandler = async (event: HookEvent, context: unknown) => {
     const cfg = resolveConfigFromApi(api);
 
     const toolName = (event as { toolName?: string }).toolName;
@@ -1498,12 +1531,16 @@ export default function register(api: OpenClawPluginApi) {
     }
 
     return undefined;
-  });
+  };
+
+  if (safeRegisterHook("http_tool_invoke", httpToolInvokeHandler)) {
+    httpHooksRegistered++;
+  }
 
   // -------------------------------------------------------------------------
   // Hook: http_tool_result (HTTP /tools/invoke post-execution scanning)
   // -------------------------------------------------------------------------
-  api.on("http_tool_result", async (event, context) => {
+  const httpToolResultHandler = async (event: HookEvent, context: unknown) => {
     const cfg = resolveConfigFromApi(api);
 
     const toolName = (event as { toolName?: string }).toolName;
@@ -1558,7 +1595,22 @@ export default function register(api: OpenClawPluginApi) {
     }
 
     return undefined;
-  });
+  };
+
+  if (safeRegisterHook("http_tool_result", httpToolResultHandler)) {
+    httpHooksRegistered++;
+  }
+
+  // Log HTTP hooks registration status
+  if (httpHooksRegistered > 0) {
+    console.log(
+      `[citadel-guard] Registered ${httpHooksRegistered}/4 HTTP API hooks (OpenClaw PR #6099)`,
+    );
+  } else {
+    console.log(
+      "[citadel-guard] HTTP API hooks not available - using messaging hooks only",
+    );
+  }
 
   // -------------------------------------------------------------------------
   // Service: citadel-guard-sidecar
