@@ -34,13 +34,17 @@ export class LRUCache<T> {
 
   /**
    * Generate a cache key from scan parameters
+   * Includes tenantId for multi-tenant isolation
    */
   generateKey(
     mode: string,
     sessionId: string | undefined,
     text: string,
+    tenantId?: string,
   ): string {
-    return this.hash(`${mode}:${sessionId || ""}:${text}`);
+    // Include tenantId in cache key to prevent cross-tenant cache pollution
+    const tenant = tenantId || "_default_";
+    return this.hash(`${tenant}:${mode}:${sessionId || ""}:${text}`);
   }
 
   /**

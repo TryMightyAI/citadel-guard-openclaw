@@ -104,6 +104,32 @@ describe("LRUCache", () => {
 
       expect(key1).toBe(key2);
     });
+
+    it("should generate different keys for different tenants", () => {
+      const key1 = cache.generateKey("input", "session1", "hello", "tenant1");
+      const key2 = cache.generateKey("input", "session1", "hello", "tenant2");
+
+      expect(key1).not.toBe(key2);
+    });
+
+    it("should use default tenant when tenantId is undefined", () => {
+      const key1 = cache.generateKey("input", "session1", "hello", undefined);
+      const key2 = cache.generateKey("input", "session1", "hello");
+
+      expect(key1).toBe(key2);
+    });
+
+    it("should isolate cache keys by tenant", () => {
+      // Same content but different tenants = different keys
+      const tenant1Key = cache.generateKey("input", "session1", "hello", "org_123");
+      const tenant2Key = cache.generateKey("input", "session1", "hello", "org_456");
+
+      expect(tenant1Key).not.toBe(tenant2Key);
+
+      // Same tenant = same key
+      const sameKey = cache.generateKey("input", "session1", "hello", "org_123");
+      expect(tenant1Key).toBe(sameKey);
+    });
   });
 
   describe("TTL expiration", () => {

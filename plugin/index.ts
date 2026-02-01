@@ -10,13 +10,20 @@ import { LRUCache } from "./cache";
 import { MetricsCollector } from "./metrics";
 import {
   type NormalizedScanResult,
-  RateLimitHandler,
   type RawScanResult,
   isProApiKey,
   requestScanOss,
   requestScanPro,
   resolveApiKey,
 } from "./pro-api";
+import {
+  CircuitBreaker,
+  CircuitOpenError,
+  TenantRateLimitHandler,
+  sanitizeSessionId,
+  isPayloadWithinLimits,
+  truncatePayload,
+} from "./security";
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -69,7 +76,15 @@ type CitadelConfig = {
 // Singleton instances
 let scanCache: LRUCache<NormalizedScanResult> | null = null;
 const metricsCollector = new MetricsCollector();
-const rateLimiter = new RateLimitHandler();
+const tenantRateLimiter = new TenantRateLimitHandler();
+const circuitBreaker = new CircuitBreaker({
+  failureThreshold: 5,
+  resetTimeoutMs: 30000,
+  halfOpenMaxAttempts: 3,
+});
+
+// Maximum payload size (1MB)
+const MAX_PAYLOAD_SIZE = 1024 * 1024;
 
 // Track scan_group_id from input scans for linking to output scans
 // Key: sessionId, Value: { scanGroupId, timestamp }
@@ -282,7 +297,7 @@ function resolveEndpoint(cfg: CitadelConfig): string {
 }
 
 // ============================================================================
-// Session extraction
+// Session and tenant extraction
 // ============================================================================
 
 interface HookEvent {
@@ -291,6 +306,8 @@ interface HookEvent {
     conversationId?: string;
     channelId?: string;
     accountId?: string;
+    orgId?: string; // Organization/tenant ID for isolation
+    tenantId?: string; // Alternative tenant field
   };
   toolName?: string;
   params?: unknown;
@@ -300,20 +317,45 @@ interface HookEvent {
 
 interface HookContext {
   sessionKey?: string;
+  orgId?: string;
+  tenantId?: string;
   logger?: { info: (msg: string) => void };
 }
 
+interface ExtractedIdentifiers {
+  sessionId: string | undefined;
+  tenantId: string | undefined;
+}
+
+function extractIdentifiers(
+  event: HookEvent,
+  context?: HookContext,
+): ExtractedIdentifiers {
+  // Session ID priority: conversationId > sessionKey > channelId
+  const sessionId =
+    event.metadata?.conversationId ||
+    context?.sessionKey ||
+    event.metadata?.channelId ||
+    undefined;
+
+  // Tenant ID priority: orgId > tenantId > accountId
+  const tenantId =
+    event.metadata?.orgId ||
+    context?.orgId ||
+    event.metadata?.tenantId ||
+    context?.tenantId ||
+    event.metadata?.accountId ||
+    undefined;
+
+  return { sessionId, tenantId };
+}
+
+// Keep backward compat
 function extractSessionId(
   event: HookEvent,
   context?: HookContext,
 ): string | undefined {
-  // Priority: conversationId > sessionKey > channelId
-  return (
-    event.metadata?.conversationId ||
-    context?.sessionKey ||
-    event.metadata?.channelId ||
-    undefined
-  );
+  return extractIdentifiers(event, context).sessionId;
 }
 
 // ============================================================================
@@ -347,18 +389,71 @@ async function scanWithCitadel(params: {
   mode: "input" | "output";
   sessionId?: string;
   scanGroupId?: string; // For linking output scans to input scans (Pro API)
+  tenantId?: string; // For tenant isolation in cache and rate limiting
   cfg: CitadelConfig;
 }): Promise<RawScanResult> {
-  const { text, mode, sessionId, scanGroupId, cfg } = params;
+  const { text, mode, scanGroupId, cfg } = params;
+  // Validate and sanitize session ID
+  const sessionId = sanitizeSessionId(params.sessionId);
+  const tenantId = params.tenantId || "_default_";
+
   const apiKey = resolveApiKey(cfg.apiKey);
   const isPro = isProApiKey(apiKey);
   const startTime = Date.now();
 
-  // Check rate limit backoff
-  if (rateLimiter.shouldBackoff()) {
+  // Payload size check (before any processing)
+  if (!isPayloadWithinLimits(text, MAX_PAYLOAD_SIZE)) {
+    console.warn(
+      `[citadel-guard] Payload too large (${text.length} bytes), truncating`,
+    );
+    // For very large payloads, we can't scan effectively - fail closed
+    if (!cfg.failOpen) {
+      return {
+        ok: false,
+        error: "Payload too large",
+        isPro,
+      };
+    }
+  }
+
+  // Check circuit breaker state
+  const circuitState = circuitBreaker.getState();
+  if (circuitState === "open") {
+    // During circuit open, try cache first
+    if (cfg.cacheEnabled && scanCache) {
+      const cacheKey = scanCache.generateKey(mode, sessionId, text, tenantId);
+      const cached = scanCache.get(cacheKey);
+      if (cached) {
+        metricsCollector.recordCacheHit();
+        return { ok: true, data: cached, isPro };
+      }
+    }
+
+    // Circuit is open - fail based on config
+    if (cfg.failOpen) {
+      return {
+        ok: true,
+        data: {
+          decision: "ALLOW",
+          score: 0,
+          reason: "circuit_breaker_open",
+          rawResponse: null,
+        },
+        isPro,
+      };
+    }
+    return {
+      ok: false,
+      error: "Circuit breaker open - Citadel unavailable",
+      isPro,
+    };
+  }
+
+  // Check per-tenant rate limit backoff
+  if (tenantRateLimiter.shouldBackoff(tenantId)) {
     // During backoff, try cache first
     if (cfg.cacheEnabled && scanCache) {
-      const cacheKey = scanCache.generateKey(mode, sessionId, text);
+      const cacheKey = scanCache.generateKey(mode, sessionId, text, tenantId);
       const cached = scanCache.get(cacheKey);
       if (cached) {
         metricsCollector.recordCacheHit();
@@ -389,7 +484,7 @@ async function scanWithCitadel(params: {
 
   // Check cache (skip for large payloads)
   if (cfg.cacheEnabled && scanCache && text.length <= MAX_CACHE_PAYLOAD_SIZE) {
-    const cacheKey = scanCache.generateKey(mode, sessionId, text);
+    const cacheKey = scanCache.generateKey(mode, sessionId, text, tenantId);
     const cached = scanCache.get(cacheKey);
     if (cached) {
       metricsCollector.recordCacheHit();
@@ -398,35 +493,60 @@ async function scanWithCitadel(params: {
     metricsCollector.recordCacheMiss();
   }
 
-  // Make the actual request
+  // Make the actual request with circuit breaker protection
   let result: RawScanResult;
 
-  if (isPro && apiKey) {
-    result = await requestScanPro({
-      content: text,
-      scanPhase: mode,
-      sessionId,
-      scanGroupId,
-      apiKey,
-      timeoutMs: cfg.timeoutMs,
+  try {
+    result = await circuitBreaker.execute(async () => {
+      if (isPro && apiKey) {
+        return requestScanPro({
+          content: text,
+          scanPhase: mode,
+          sessionId,
+          scanGroupId,
+          apiKey,
+          timeoutMs: cfg.timeoutMs,
+        });
+      }
+      return requestScanOss({
+        endpoint: resolveEndpoint(cfg),
+        text,
+        mode,
+        sessionId,
+        timeoutMs: cfg.timeoutMs,
+      });
     });
-  } else {
-    result = await requestScanOss({
-      endpoint: resolveEndpoint(cfg),
-      text,
-      mode,
-      sessionId,
-      timeoutMs: cfg.timeoutMs,
-    });
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      // Circuit breaker tripped during request
+      if (cfg.failOpen) {
+        return {
+          ok: true,
+          data: {
+            decision: "ALLOW",
+            score: 0,
+            reason: "circuit_breaker_tripped",
+            rawResponse: null,
+          },
+          isPro,
+        };
+      }
+      return {
+        ok: false,
+        error: err.message,
+        isPro,
+      };
+    }
+    throw err;
   }
 
   const latencyMs = Date.now() - startTime;
 
-  // Handle rate limiting
+  // Handle rate limiting (per-tenant)
   if (result.rateLimited) {
-    rateLimiter.recordRateLimit();
+    tenantRateLimiter.recordRateLimit(tenantId);
   } else if (result.ok) {
-    rateLimiter.recordSuccess();
+    tenantRateLimiter.recordSuccess(tenantId);
   }
 
   // Record metrics
@@ -449,7 +569,7 @@ async function scanWithCitadel(params: {
     scanCache &&
     text.length <= MAX_CACHE_PAYLOAD_SIZE
   ) {
-    const cacheKey = scanCache.generateKey(mode, sessionId, text);
+    const cacheKey = scanCache.generateKey(mode, sessionId, text, tenantId);
     scanCache.set(cacheKey, result.data);
   }
 
@@ -728,7 +848,7 @@ export default function register(api: OpenClawPluginApi) {
   // -------------------------------------------------------------------------
   api.on("message_received", async (event, context) => {
     const cfg = resolveConfigFromApi(api);
-    const sessionId = extractSessionId(
+    const { sessionId, tenantId } = extractIdentifiers(
       event as HookEvent,
       context as HookContext,
     );
@@ -741,6 +861,7 @@ export default function register(api: OpenClawPluginApi) {
       text: event.content,
       mode: "input",
       sessionId,
+      tenantId,
       cfg,
     });
 
@@ -781,7 +902,7 @@ export default function register(api: OpenClawPluginApi) {
   // -------------------------------------------------------------------------
   api.on("message_sending", async (event, context) => {
     const cfg = resolveConfigFromApi(api);
-    const sessionId = extractSessionId(
+    const { sessionId, tenantId } = extractIdentifiers(
       event as HookEvent,
       context as HookContext,
     );
@@ -796,6 +917,7 @@ export default function register(api: OpenClawPluginApi) {
       mode: "output",
       sessionId,
       scanGroupId,
+      tenantId,
       cfg,
     });
 
@@ -834,7 +956,7 @@ export default function register(api: OpenClawPluginApi) {
     if (!event.toolName) return;
 
     const toolName = event.toolName.toLowerCase();
-    const sessionId = extractSessionId(
+    const { sessionId, tenantId } = extractIdentifiers(
       event as HookEvent,
       context as HookContext,
     );
@@ -851,6 +973,7 @@ export default function register(api: OpenClawPluginApi) {
       text: argsText,
       mode: "input",
       sessionId,
+      tenantId,
       cfg,
     });
 
@@ -901,7 +1024,7 @@ export default function register(api: OpenClawPluginApi) {
     const cfg = resolveConfigFromApi(api);
     if (!event.toolName) return;
 
-    const sessionId = extractSessionId(
+    const { sessionId, tenantId } = extractIdentifiers(
       event as HookEvent,
       context as HookContext,
     );
@@ -919,6 +1042,7 @@ export default function register(api: OpenClawPluginApi) {
       text: resultText,
       mode: "input",
       sessionId,
+      tenantId,
       cfg,
     });
 
@@ -982,7 +1106,7 @@ export default function register(api: OpenClawPluginApi) {
   // -------------------------------------------------------------------------
   api.on("before_agent_start", async (event, context) => {
     const cfg = resolveConfigFromApi(api);
-    const sessionId = extractSessionId(
+    const { sessionId, tenantId } = extractIdentifiers(
       event as HookEvent,
       context as HookContext,
     );
@@ -995,6 +1119,7 @@ export default function register(api: OpenClawPluginApi) {
       text: event.prompt,
       mode: "input",
       sessionId,
+      tenantId,
       cfg,
     });
 

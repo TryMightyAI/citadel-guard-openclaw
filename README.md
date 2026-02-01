@@ -6,6 +6,33 @@ Citadel Guard is a security plugin for [OpenClaw](https://github.com/openclaw/op
 
 ---
 
+## ⚠️ CRITICAL: HTTP API Protection
+
+**OpenClaw's plugin hooks do NOT cover the HTTP API endpoints.** The following are completely unprotected by plugins alone:
+
+| Endpoint | Hook Status | Risk |
+|----------|-------------|------|
+| `/v1/chat/completions` | **BYPASSES ALL HOOKS** | Direct LLM access |
+| `/v1/responses` | **BYPASSES ALL HOOKS** | Direct LLM access |
+| `/tools/invoke` | **BYPASSES ALL HOOKS** | Direct tool execution |
+
+### Full Protection Setup
+
+For complete protection, you **MUST** also run the Citadel OpenAI Proxy:
+
+```bash
+# Start the proxy (intercepts all HTTP API calls)
+CITADEL_URL=http://localhost:3333 \
+UPSTREAM_URL=http://localhost:18789 \
+bun run citadel-openai-proxy.ts
+```
+
+Then configure your LLM clients to use `http://localhost:5050` instead of hitting OpenClaw directly.
+
+See [HTTP API Protection](#http-api-protection-proxy) section below for full setup.
+
+---
+
 ## How It Works
 
 ```
@@ -176,7 +203,24 @@ Start your OpenClaw agent. Citadel Guard will scan messages through your local s
 
 ## What Gets Protected
 
-Citadel Guard hooks into every stage of your agent's message flow:
+### Plugin Hooks (Messaging Platforms)
+
+These hooks protect messages through Telegram, Discord, Slack, etc.:
+
+| Hook | Status | What it does |
+|------|--------|--------------|
+| `before_tool_call` | ✅ Active | Scans tool arguments before execution |
+| `after_tool_call` | ✅ Active | Detects indirect injection in tool results |
+| `tool_result_persist` | ✅ Active | Sanitizes dangerous tool outputs |
+| `before_agent_start` | ✅ Active | Scans initial context/prompts |
+| `message_received` | ⏳ Future | Will scan inbound user messages |
+| `message_sending` | ⏳ Future | Will scan outbound AI responses |
+
+> **Note:** `message_received` and `message_sending` are [planned but not yet implemented](https://docs.openclaw.ai/hooks) in OpenClaw. Tool-related hooks ARE active and provide protection for indirect injection via tool results.
+
+### HTTP API (Requires Proxy)
+
+The plugin hooks **DO NOT** fire for direct HTTP API calls. You must use the proxy:
 
 | Hook | What it does | Example attacks blocked |
 |------|--------------|------------------------|
@@ -416,6 +460,90 @@ bun run lint:fix     # Auto-fix lint issues
 
 - **Issues:** [GitHub Issues](https://github.com/TryMightyAI/citadel-guard-openclaw/issues)
 - **Pro support:** support@trymighty.ai
+
+---
+
+## HTTP API Protection (Proxy)
+
+OpenClaw's HTTP API (`/v1/chat/completions`, `/v1/responses`, `/tools/invoke`) **bypasses all plugin hooks**. To protect these endpoints, run the included proxy.
+
+### Setup
+
+```bash
+# 1. Start your Citadel scanner (OSS or point to Pro)
+./citadel serve 3333
+
+# 2. Start the proxy
+cd plugins/citadel-guard
+CITADEL_URL=http://localhost:3333 \
+UPSTREAM_URL=http://localhost:18789 \
+bun run citadel-openai-proxy.ts
+```
+
+The proxy listens on port 5050 by default.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CITADEL_URL` | `http://127.0.0.1:3333` | Citadel scanner URL |
+| `UPSTREAM_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway URL |
+| `UPSTREAM_TOKEN` | - | Bearer token for upstream |
+| `PROXY_PORT` | `5050` | Port for the proxy |
+| `SCAN_OUTPUT` | `true` | Also scan LLM responses |
+
+### What It Protects
+
+```
+Your App → Citadel Proxy (5050) → Citadel Scan → OpenClaw (18789) → LLM
+                ↓                      ↓
+           Block attacks          Block leaks
+```
+
+| Endpoint | Input Scanning | Output Scanning |
+|----------|----------------|-----------------|
+| `/v1/chat/completions` | ✅ | ✅ |
+| `/v1/responses` | ✅ | ✅ |
+| `/tools/invoke` | ✅ | ✅ |
+
+### Example: Protecting Claude Code
+
+```bash
+# Instead of:
+# ANTHROPIC_BASE_URL=http://localhost:18789 claude
+
+# Use:
+ANTHROPIC_BASE_URL=http://localhost:5050 claude
+```
+
+---
+
+## Known Security Gaps in OpenClaw
+
+According to [security researchers](https://blogs.cisco.com/ai/personal-ai-agents-like-openclaw-are-a-security-nightmare) and [OpenClaw's own documentation](https://docs.openclaw.ai/gateway/security):
+
+| Issue | Citadel Protection |
+|-------|-------------------|
+| Prompt injection via tool results | ✅ `after_tool_call` hook scans results |
+| Credential/API key leakage | ✅ Output scanning detects secrets |
+| Indirect injection (web/email) | ✅ Tool result scanning |
+| HTTP API bypass | ✅ **Requires proxy** (see above) |
+| Malicious skills | ✅ Skills scanned at startup |
+| Session transcript exposure | ❌ Disk encryption is user responsibility |
+
+### The "Lethal Trifecta" (Simon Willison)
+
+OpenClaw has all three risk factors:
+1. ✅ Access to private data
+2. ✅ Exposure to untrusted content
+3. ✅ Ability to communicate externally
+
+Citadel Guard mitigates this by scanning content at every interception point, but **defense in depth is essential**:
+
+- Use read-only agents for untrusted content
+- Disable `web_fetch`/`browser` for sensitive agents
+- Run OpenClaw on isolated infrastructure
+- Use the proxy for all HTTP API access
 
 ---
 
