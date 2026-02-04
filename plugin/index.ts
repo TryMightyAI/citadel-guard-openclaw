@@ -31,6 +31,9 @@ import {
   isAllowedBinaryPath,
   validateCitadelArgs,
   handleStreamingResponse,
+  shouldFailOpen,
+  handleScanFailure,
+  type ScanType,
 } from "./security-fixes";
 
 const DEFAULT_PORT = 3000;
@@ -516,48 +519,20 @@ function extractSessionId(
 }
 
 // ============================================================================
-// Fail behavior handling
+// Fail behavior handling - uses functions from security-fixes.ts
 // ============================================================================
 
-type ScanType = "inbound" | "outbound" | "tool_args" | "tool_results";
-
 /**
- * Determine if we should fail-open for a specific scan type.
- * Uses granular settings if available, otherwise falls back to global failOpen.
+ * Wrapper around handleScanFailure for consistency with existing code.
+ * Uses the imported functions from security-fixes.ts to avoid DRY violations.
  */
-function shouldFailOpen(cfg: CitadelConfig, scanType: ScanType): boolean {
-  switch (scanType) {
-    case "inbound":
-    case "tool_args":
-      return cfg.failOpenInbound ?? cfg.failOpen;
-    case "outbound":
-      return cfg.failOpenOutbound ?? cfg.failOpen;
-    case "tool_results":
-      return cfg.failOpenToolResults ?? cfg.failOpen;
-    default:
-      return cfg.failOpen;
-  }
-}
-
 function handleScanError(
   cfg: CitadelConfig,
   error: string,
   context: string,
   scanType: ScanType = "inbound",
 ): { block: boolean; reason?: string } {
-  const failOpen = shouldFailOpen(cfg, scanType);
-
-  if (failOpen) {
-    console.warn(
-      `[citadel-guard] ${context}: scan failed (${error}), failing OPEN`,
-    );
-    return { block: false };
-  }
-
-  console.warn(
-    `[citadel-guard] ${context}: scan failed (${error}), failing CLOSED`,
-  );
-  return { block: true, reason: "citadel_unavailable" };
+  return handleScanFailure(cfg, error, context, scanType);
 }
 
 // ============================================================================

@@ -137,14 +137,14 @@ describe("FIX: Configurable Fail-Open", () => {
   describe("handleScanFailure", () => {
     it("returns block=false when failing open", () => {
       const config: FailOpenConfig = { failOpen: true };
-      const result = handleScanFailure(config, "inbound", "timeout", "test");
+      const result = handleScanFailure(config, "timeout", "test", "inbound");
 
       expect(result.block).toBe(false);
     });
 
     it("returns block=true when failing closed", () => {
       const config: FailOpenConfig = { failOpen: false };
-      const result = handleScanFailure(config, "inbound", "timeout", "test");
+      const result = handleScanFailure(config, "timeout", "test", "inbound");
 
       expect(result.block).toBe(true);
       expect(result.reason).toBe("security_scan_unavailable");
@@ -157,10 +157,10 @@ describe("FIX: Configurable Fail-Open", () => {
       };
 
       // Inbound should block (uses failOpen)
-      expect(handleScanFailure(config, "inbound", "error", "test").block).toBe(true);
+      expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
 
       // Outbound should allow (uses failOpenOutbound)
-      expect(handleScanFailure(config, "outbound", "error", "test").block).toBe(false);
+      expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
     });
   });
 });
@@ -333,13 +333,13 @@ describe("FIX: Integration Tests", () => {
     };
 
     // Inbound scan failure should block
-    expect(handleScanFailure(config, "inbound", "error", "test").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
 
     // Outbound scan failure should block
-    expect(handleScanFailure(config, "outbound", "error", "test").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(true);
 
     // Tool results scan failure should block
-    expect(handleScanFailure(config, "tool_results", "error", "test").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(true);
 
     // Streaming should block
     expect(handleStreamingResponse(true, config)?.block).toBe(true);
@@ -355,9 +355,9 @@ describe("FIX: Integration Tests", () => {
     };
 
     // All failures should allow through
-    expect(handleScanFailure(config, "inbound", "error", "test").block).toBe(false);
-    expect(handleScanFailure(config, "outbound", "error", "test").block).toBe(false);
-    expect(handleScanFailure(config, "tool_results", "error", "test").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(false);
     expect(handleStreamingResponse(true, config)).toBeUndefined();
   });
 
@@ -370,9 +370,9 @@ describe("FIX: Integration Tests", () => {
       blockStreamingResponses: true, // Block streaming
     };
 
-    expect(handleScanFailure(config, "inbound", "error", "test").block).toBe(true);
-    expect(handleScanFailure(config, "outbound", "error", "test").block).toBe(false);
-    expect(handleScanFailure(config, "tool_results", "error", "test").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(false);
     expect(handleStreamingResponse(true, config)?.block).toBe(true);
   });
 });

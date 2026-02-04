@@ -72,7 +72,13 @@ export function validateCitadelArgs(args: string[]): string[] {
 // ============================================================================
 
 /**
- * Extended config options for granular fail-open control
+ * Scan type enum for consistent usage across the codebase.
+ */
+export type ScanType = "inbound" | "outbound" | "tool_args" | "tool_results";
+
+/**
+ * Extended config options for granular fail-open control.
+ * This interface should be implemented by CitadelConfig.
  */
 export interface FailOpenConfig {
   /** Global fail-open setting (default: false) */
@@ -98,24 +104,16 @@ export interface FailOpenConfig {
  * @param scanType - The type of scan being performed
  * @returns true if we should allow through on failure, false to block
  */
-export function shouldFailOpen(
-  config: FailOpenConfig,
-  scanType: "inbound" | "outbound" | "tool_args" | "tool_results",
-): boolean {
+export function shouldFailOpen(config: FailOpenConfig, scanType: ScanType): boolean {
   switch (scanType) {
     case "inbound":
     case "tool_args":
-      // Inbound and tool args use failOpenInbound or fall back to failOpen
       return config.failOpenInbound ?? config.failOpen;
 
     case "outbound":
-      // Outbound uses failOpenOutbound or falls back to failOpen
-      // Default to true for backwards compatibility
       return config.failOpenOutbound ?? config.failOpen;
 
     case "tool_results":
-      // Tool results use failOpenToolResults or fall back to failOpen
-      // Default to true for backwards compatibility
       return config.failOpenToolResults ?? config.failOpen;
 
     default:
@@ -127,16 +125,16 @@ export function shouldFailOpen(
  * Handle a scan error according to config.
  *
  * @param config - The fail-open configuration
- * @param scanType - The type of scan that failed
  * @param error - The error message
  * @param context - Context for logging
+ * @param scanType - The type of scan that failed (default: "inbound")
  * @returns Object indicating whether to block and why
  */
 export function handleScanFailure(
   config: FailOpenConfig,
-  scanType: "inbound" | "outbound" | "tool_args" | "tool_results",
   error: string,
   context: string,
+  scanType: ScanType = "inbound",
 ): { block: boolean; reason?: string } {
   const failOpen = shouldFailOpen(config, scanType);
 
