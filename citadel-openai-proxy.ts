@@ -401,14 +401,10 @@ const server = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    // Health check
+    // Health check - minimal response to avoid exposing internal URLs
     if (url.pathname === "/health") {
       return new Response(
-        JSON.stringify({
-          status: "ok",
-          citadel: CITADEL_URL,
-          upstream: UPSTREAM_URL,
-        }),
+        JSON.stringify({ status: "ok" }),
         {
           headers: { "Content-Type": "application/json" },
         },
@@ -461,8 +457,9 @@ const server = Bun.serve({
           : "/v1/chat/completions";
       if (userParts.length > 0) {
         for (const part of userParts) {
+          // FIX: Log content length only, not content itself
           console.log(
-            `[citadel-proxy] [${endpoint}] Scanning input: "${part.slice(0, 50)}..."`,
+            `[citadel-proxy] [${endpoint}] Scanning input (${part.length} chars)`,
           );
           const inputScan = await scanInput(part);
 
@@ -531,9 +528,8 @@ const server = Bun.serve({
 
       if (assistantParts.length > 0) {
         for (const part of assistantParts) {
-          console.log(
-            `[citadel-proxy] Scanning output: "${part.slice(0, 50)}..."`,
-          );
+          // FIX: Log content length only, not content itself
+          console.log(`[citadel-proxy] Scanning output (${part.length} chars)`);
           const outputScan = await scanOutput(part);
 
           if (!outputScan.safe) {

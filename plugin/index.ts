@@ -27,6 +27,11 @@ import {
   isPayloadWithinLimits,
   truncatePayload,
 } from "./security";
+import {
+  isAllowedBinaryPath,
+  validateCitadelArgs,
+  handleStreamingResponse,
+} from "./security-fixes";
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -47,6 +52,14 @@ type CitadelConfig = {
 
   // Fail behavior
   failOpen: boolean;
+  /** Fail-open for inbound scanning (defaults to failOpen) */
+  failOpenInbound?: boolean;
+  /** Fail-open for outbound scanning (defaults to failOpen) */
+  failOpenOutbound?: boolean;
+  /** Fail-open for tool result scanning (defaults to failOpen) */
+  failOpenToolResults?: boolean;
+  /** Block streaming responses that can't be scanned (default: false) */
+  blockStreamingResponses: boolean;
 
   // Caching
   cacheEnabled: boolean;
@@ -192,6 +205,12 @@ function normalizeConfig(raw: unknown): CitadelConfig {
 
     // Fail behavior - default to fail-closed (false) for security
     failOpen: asBoolean(record.failOpen) ?? false,
+    // Granular fail-open settings (undefined = use failOpen)
+    failOpenInbound: asBoolean(record.failOpenInbound),
+    failOpenOutbound: asBoolean(record.failOpenOutbound),
+    failOpenToolResults: asBoolean(record.failOpenToolResults),
+    // Block streaming responses that can't be scanned (default: false for backwards compat)
+    blockStreamingResponses: asBoolean(record.blockStreamingResponses) ?? false,
 
     // Caching
     cacheEnabled: asBoolean(record.cacheEnabled) ?? true,
@@ -500,12 +519,35 @@ function extractSessionId(
 // Fail behavior handling
 // ============================================================================
 
+type ScanType = "inbound" | "outbound" | "tool_args" | "tool_results";
+
+/**
+ * Determine if we should fail-open for a specific scan type.
+ * Uses granular settings if available, otherwise falls back to global failOpen.
+ */
+function shouldFailOpen(cfg: CitadelConfig, scanType: ScanType): boolean {
+  switch (scanType) {
+    case "inbound":
+    case "tool_args":
+      return cfg.failOpenInbound ?? cfg.failOpen;
+    case "outbound":
+      return cfg.failOpenOutbound ?? cfg.failOpen;
+    case "tool_results":
+      return cfg.failOpenToolResults ?? cfg.failOpen;
+    default:
+      return cfg.failOpen;
+  }
+}
+
 function handleScanError(
   cfg: CitadelConfig,
   error: string,
   context: string,
+  scanType: ScanType = "inbound",
 ): { block: boolean; reason?: string } {
-  if (cfg.failOpen) {
+  const failOpen = shouldFailOpen(cfg, scanType);
+
+  if (failOpen) {
     console.warn(
       `[citadel-guard] ${context}: scan failed (${error}), failing OPEN`,
     );
@@ -935,10 +977,23 @@ function startCitadelSidecar(
   if (citadelProcess && !citadelProcess.killed) return;
 
   const bin = cfg.citadelBin ?? "citadel";
-  const args =
+
+  // FIX: Validate binary path before execution
+  if (!isAllowedBinaryPath(bin)) {
+    ctx.logger.error?.(
+      `[citadel-guard] Blocked unsafe binary path: ${bin.slice(0, 50)}`,
+    );
+    return;
+  }
+
+  const rawArgs =
     cfg.citadelArgs.length > 0
       ? cfg.citadelArgs
       : ["serve", String(cfg.citadelPort)];
+
+  // FIX: Filter dangerous arguments
+  const args = validateCitadelArgs(rawArgs);
+
   const logPath = path.join(ctx.stateDir, "citadel.log");
   const out = fs.openSync(logPath, "a");
 
@@ -1114,13 +1169,18 @@ export default function register(api: OpenClawPluginApi) {
       cfg,
     });
 
-    // Fail-open for outbound to avoid breaking responses
+    // FIX: Use configurable fail behavior for outbound
     if (!result.ok || !result.data) {
-      api.logger.warn?.(
-        `[citadel-guard] outbound scan failed: ${result.error ?? "invalid response"}`,
+      const { block } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        "message_sending",
+        "outbound",
       );
-      // Outbound defaults to fail-open
-      return;
+      if (block) {
+        return { content: cfg.outboundBlockMessage };
+      }
+      return; // fail-open
     }
 
     if (shouldBlockOutbound(cfg, result.data)) {
@@ -1239,11 +1299,24 @@ export default function register(api: OpenClawPluginApi) {
       cfg,
     });
 
-    // Fail-open for tool results to avoid breaking workflows
+    // FIX: Use configurable fail behavior for tool results
     if (!result.ok || !result.data) {
-      api.logger.warn?.(
-        `[citadel-guard] tool result scan failed for ${event.toolName}: ${result.error ?? "invalid response"}`,
+      const { block } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        `after_tool_call(${event.toolName})`,
+        "tool_results",
       );
+      // For tool results, we can't directly block - we mark for sanitization
+      if (block) {
+        const cacheKey = buildToolResultCacheKey(event.toolName, resultText);
+        if (cacheKey) {
+          toolResultCache.set(cacheKey, {
+            blocked: true,
+            reason: "scan_unavailable",
+          });
+        }
+      }
       return;
     }
 
@@ -1405,9 +1478,21 @@ export default function register(api: OpenClawPluginApi) {
       return undefined;
     }
 
-    // Skip streaming responses (limitation documented in RFC)
-    if ((event as { isStreaming?: boolean }).isStreaming) {
-      return undefined;
+    // FIX: Handle streaming responses with configurable behavior
+    const isStreaming = (event as { isStreaming?: boolean }).isStreaming;
+    if (isStreaming) {
+      const streamingResult = handleStreamingResponse(
+        true,
+        { blockStreamingResponses: cfg.blockStreamingResponses },
+        api.logger,
+      );
+      if (streamingResult) {
+        return {
+          block: true,
+          blockReason: streamingResult.reason,
+        };
+      }
+      return undefined; // Allow streaming with warning logged
     }
 
     // Extract identifiers from HTTP context
@@ -1430,11 +1515,20 @@ export default function register(api: OpenClawPluginApi) {
       cfg,
     });
 
-    // Fail-open for outbound to avoid breaking responses
+    // FIX: Use configurable fail behavior for outbound
     if (!result.ok || !result.data) {
-      api.logger.warn?.(
-        `[citadel-guard] http_response_sending scan failed: ${result.error ?? "invalid response"}`,
+      const { block } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        "http_response_sending",
+        "outbound",
       );
+      if (block) {
+        return {
+          block: true,
+          blockReason: "Response blocked: security scan unavailable",
+        };
+      }
       return undefined;
     }
 
@@ -1559,11 +1653,20 @@ export default function register(api: OpenClawPluginApi) {
       cfg,
     });
 
-    // Fail-open for tool results to avoid breaking workflows
+    // FIX: Use configurable fail behavior for tool results
     if (!result.ok || !result.data) {
-      api.logger.warn?.(
-        `[citadel-guard] http_tool_result scan failed for ${toolName}: ${result.error ?? "invalid response"}`,
+      const { block } = handleScanError(
+        cfg,
+        result.error || "unknown",
+        `http_tool_result(${toolName})`,
+        "tool_results",
       );
+      if (block) {
+        return {
+          block: true,
+          blockReason: "Tool result blocked: security scan unavailable",
+        };
+      }
       return undefined;
     }
 
