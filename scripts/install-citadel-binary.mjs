@@ -321,20 +321,38 @@ async function main() {
     chmodSync(installPath, 0o755);
 
     info(`Installed to: ${installPath}`);
+
+    // Download BERT model automatically
+    info("Downloading BERT model (~685MB, first time only)...");
+    const modelResult = spawnSync(installPath, ["scan", "test"], {
+      encoding: "utf8",
+      timeout: 600000, // 10 minute timeout for model download
+      env: {
+        ...process.env,
+        CITADEL_AUTO_DOWNLOAD_MODEL: "true",
+        CITADEL_ENABLE_HUGOT: "true",
+      },
+    });
+
+    if (modelResult.status === 0) {
+      info("BERT model ready");
+    } else {
+      warn("Could not download BERT model automatically");
+      warn("Run with CITADEL_AUTO_DOWNLOAD_MODEL=true on first use:");
+      console.log(
+        "      CITADEL_AUTO_DOWNLOAD_MODEL=true CITADEL_ENABLE_HUGOT=true citadel serve 3333",
+      );
+      console.log("");
+    }
+
     console.log("");
     info("Citadel scanner installed successfully!");
     console.log("");
     console.log("  Usage:");
     console.log("    OSS Mode (local scanner):");
-    console.log("      export CITADEL_AUTO_DOWNLOAD_MODEL=true");
-    console.log("      export CITADEL_ENABLE_HUGOT=true");
     console.log("      citadel serve 3333");
     console.log("");
-    console.log(
-      "    The BERT model (~685MB) downloads automatically on first run.",
-    );
-    console.log("");
-    console.log("    Pro Mode (cloud API, no model download needed):");
+    console.log("    Pro Mode (cloud API):");
     console.log("      export CITADEL_API_KEY=mc_live_xxx");
     console.log("");
   } catch (err) {
