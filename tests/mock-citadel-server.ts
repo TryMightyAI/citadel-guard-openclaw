@@ -11,7 +11,7 @@
  * - Configurable responses
  */
 
-const MOCK_PORT = parseInt(process.env.MOCK_CITADEL_PORT || "3333");
+const MOCK_PORT = Number.parseInt(process.env.MOCK_CITADEL_PORT || "3333");
 
 // Configuration for mock behavior
 interface MockConfig {
@@ -42,18 +42,34 @@ let config: MockConfig = {
   defaultScore: 10,
   blockKeywords: [
     // Direct injection
-    "drop table", "ignore previous", "system prompt", "jailbreak",
-    "ignore all", "forget your", "developer mode", "override safety",
-    "new instructions", "reveal secrets", "admin override", "disable all",
+    "drop table",
+    "ignore previous",
+    "system prompt",
+    "jailbreak",
+    "ignore all",
+    "forget your",
+    "developer mode",
+    "override safety",
+    "new instructions",
+    "reveal secrets",
+    "admin override",
+    "disable all",
     // Role play attacks
-    "dan (do anything", "without restrictions", "no ethical",
+    "dan (do anything",
+    "without restrictions",
+    "no ethical",
     // Delimiter attacks
-    "begin override", "end override",
+    "begin override",
+    "end override",
   ],
   warnKeywords: ["password", "api_key", "secret"],
 };
 
-function analyzeText(text: string): { decision: string; score: number; reason?: string } {
+function analyzeText(text: string): {
+  decision: string;
+  score: number;
+  reason?: string;
+} {
   const lowerText = text.toLowerCase();
 
   // Check for block keywords
@@ -92,7 +108,7 @@ const server = Bun.serve({
     // Config endpoint - allows tests to modify behavior
     if (url.pathname === "/_config") {
       if (req.method === "POST") {
-        const body = await req.json() as Partial<MockConfig>;
+        const body = (await req.json()) as Partial<MockConfig>;
         config = { ...config, ...body };
         return new Response(JSON.stringify({ status: "ok", config }), {
           headers: { "Content-Type": "application/json" },
@@ -112,7 +128,12 @@ const server = Bun.serve({
           forceRateLimit: false,
           defaultDecision: "ALLOW",
           defaultScore: 10,
-          blockKeywords: ["drop table", "ignore previous", "system prompt", "jailbreak"],
+          blockKeywords: [
+            "drop table",
+            "ignore previous",
+            "system prompt",
+            "jailbreak",
+          ],
           warnKeywords: ["password", "api_key", "secret"],
         };
         return new Response(JSON.stringify({ status: "reset", config }), {
@@ -158,7 +179,7 @@ const server = Bun.serve({
       }
 
       // Parse request
-      const body = await req.json() as { text?: string; mode?: string };
+      const body = (await req.json()) as { text?: string; mode?: string };
       const text = body.text || "";
       const mode = body.mode || "input";
 
@@ -169,13 +190,16 @@ const server = Bun.serve({
         decision: analysis.decision,
         heuristic_score: analysis.score / 100,
         is_safe: analysis.decision === "ALLOW",
-        risk_level: analysis.score > 80 ? "HIGH" : analysis.score > 50 ? "MEDIUM" : "LOW",
+        risk_level:
+          analysis.score > 80 ? "HIGH" : analysis.score > 50 ? "MEDIUM" : "LOW",
         reason: analysis.reason,
         mode,
         timestamp: new Date().toISOString(),
       };
 
-      console.log(`[mock-citadel] ${mode} scan: ${analysis.decision} (score: ${analysis.score})`);
+      console.log(
+        `[mock-citadel] ${mode} scan: ${analysis.decision} (score: ${analysis.score})`,
+      );
 
       return new Response(JSON.stringify(response), {
         headers: { "Content-Type": "application/json" },

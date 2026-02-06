@@ -11,14 +11,22 @@
  *   MOCK_CITADEL=1 bun test tests/integration-security.test.ts
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  isAllowedBinaryPath,
-  validateCitadelArgs,
-  shouldFailOpen,
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  type FailOpenConfig,
   handleScanFailure,
   handleStreamingResponse,
-  type FailOpenConfig,
+  isAllowedBinaryPath,
+  shouldFailOpen,
+  validateCitadelArgs,
 } from "../plugin/security-fixes";
 
 const MOCK_URL = process.env.MOCK_CITADEL_URL || "http://localhost:3333";
@@ -43,7 +51,9 @@ async function resetMock() {
 // Helper to check if mock is available
 async function isMockAvailable(): Promise<boolean> {
   try {
-    const resp = await fetch(`${MOCK_URL}/health`, { signal: AbortSignal.timeout(1000) });
+    const resp = await fetch(`${MOCK_URL}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
     return resp.ok;
   } catch {
     return false;
@@ -51,9 +61,7 @@ async function isMockAvailable(): Promise<boolean> {
 }
 
 // Skip if mock server not running
-const describeIntegration = MOCK_ENABLED
-  ? describe
-  : describe.skip;
+const describeIntegration = MOCK_ENABLED ? describe : describe.skip;
 
 // ============================================================================
 // Integration Tests: Real Network Scenarios
@@ -113,7 +121,14 @@ describeIntegration("INTEGRATION: Security Fixes", () => {
     it("prevents argument injection via citadelArgs config", () => {
       // Note: spawn() passes args directly, not through a shell,
       // so only shell metacharacters are dangerous
-      const attacks = ["serve", "3333; malicious", "--port", "$(whoami)", "-c", "`id`"];
+      const attacks = [
+        "serve",
+        "3333; malicious",
+        "--port",
+        "$(whoami)",
+        "-c",
+        "`id`",
+      ];
       const filtered = validateCitadelArgs(attacks);
 
       expect(filtered).toContain("serve");
@@ -132,7 +147,12 @@ describeIntegration("INTEGRATION: Security Fixes", () => {
         failOpenInbound: false, // But specifically block inbound
       };
 
-      const result = handleScanFailure(config, "inbound", "timeout", "test");
+      const result = handleScanFailure(
+        config,
+        "timeout",
+        "test_context",
+        "inbound",
+      );
       expect(result.block).toBe(true);
       expect(result.reason).toBe("security_scan_unavailable");
     });
@@ -143,7 +163,12 @@ describeIntegration("INTEGRATION: Security Fixes", () => {
         failOpenOutbound: true, // But specifically allow outbound
       };
 
-      const result = handleScanFailure(config, "outbound", "timeout", "test");
+      const result = handleScanFailure(
+        config,
+        "timeout",
+        "test_context",
+        "outbound",
+      );
       expect(result.block).toBe(false);
     });
 
@@ -153,14 +178,21 @@ describeIntegration("INTEGRATION: Security Fixes", () => {
         failOpenToolResults: true,
       };
 
-      const result = handleScanFailure(config, "tool_results", "timeout", "test");
+      const result = handleScanFailure(
+        config,
+        "timeout",
+        "test_context",
+        "tool_results",
+      );
       expect(result.block).toBe(false);
     });
   });
 
   describe("FIX 3: Streaming Response Handling", () => {
     it("blocks streaming when blockStreamingResponses=true", () => {
-      const result = handleStreamingResponse(true, { blockStreamingResponses: true });
+      const result = handleStreamingResponse(true, {
+        blockStreamingResponses: true,
+      });
 
       expect(result).not.toBeUndefined();
       expect(result?.block).toBe(true);
@@ -169,7 +201,11 @@ describeIntegration("INTEGRATION: Security Fixes", () => {
 
     it("warns but allows streaming when blockStreamingResponses=false", () => {
       const logger = { warn: vi.fn() };
-      const result = handleStreamingResponse(true, { blockStreamingResponses: false }, logger);
+      const result = handleStreamingResponse(
+        true,
+        { blockStreamingResponses: false },
+        logger,
+      );
 
       expect(result).toBeUndefined(); // Allowed through
       expect(logger.warn).toHaveBeenCalledWith(
@@ -255,7 +291,7 @@ describeIntegration("INTEGRATION: Network Scenarios", () => {
           body: JSON.stringify({ text: attack, mode: "input" }),
         });
 
-        const data = await resp.json() as { decision: string };
+        const data = (await resp.json()) as { decision: string };
         expect(data.decision).toBe("BLOCK");
       }
     });
@@ -276,7 +312,7 @@ describeIntegration("INTEGRATION: Network Scenarios", () => {
           body: JSON.stringify({ text: content, mode: "input" }),
         });
 
-        const data = await resp.json() as { decision: string };
+        const data = (await resp.json()) as { decision: string };
         expect(data.decision).toBe("ALLOW");
       }
     });
@@ -296,7 +332,7 @@ describeIntegration("INTEGRATION: Network Scenarios", () => {
           body: JSON.stringify({ text: content, mode: "output" }),
         });
 
-        const data = await resp.json() as { decision: string };
+        const data = (await resp.json()) as { decision: string };
         expect(data.decision).toBe("WARN");
       }
     });

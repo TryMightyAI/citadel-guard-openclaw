@@ -22,11 +22,11 @@ import {
   requestScanPro,
 } from "../plugin/pro-api";
 import {
-  sanitizeSessionId,
-  isPayloadWithinLimits,
-  truncatePayload,
-  sanitizeObject,
   constantTimeEqual,
+  isPayloadWithinLimits,
+  sanitizeObject,
+  sanitizeSessionId,
+  truncatePayload,
 } from "../plugin/security";
 
 // ============================================================================
@@ -141,7 +141,10 @@ describe("LIVE: Prototype Pollution Prevention", () => {
   });
 
   it("sanitizeObject removes constructor", () => {
-    const malicious = { normal: 1, constructor: { prototype: { pwned: true } } };
+    const malicious = {
+      normal: 1,
+      constructor: { prototype: { pwned: true } },
+    };
     const sanitized = sanitizeObject(malicious);
 
     expect(Object.keys(sanitized as object)).toEqual(["normal"]);
@@ -261,10 +264,26 @@ describe("EVIDENCE: Vulnerability exists in source code", () => {
   it("documents the fail-open vulnerability location", () => {
     // The vulnerability exists at these locations in plugin/index.ts:
     const vulnerableLocations = [
-      { hook: "message_sending", lines: "1117-1124", behavior: "always fails open" },
-      { hook: "after_tool_call", lines: "1242-1248", behavior: "always fails open" },
-      { hook: "http_response_sending", lines: "1433-1438", behavior: "always fails open" },
-      { hook: "http_tool_result", lines: "1562-1568", behavior: "always fails open" },
+      {
+        hook: "message_sending",
+        lines: "1117-1124",
+        behavior: "always fails open",
+      },
+      {
+        hook: "after_tool_call",
+        lines: "1242-1248",
+        behavior: "always fails open",
+      },
+      {
+        hook: "http_response_sending",
+        lines: "1433-1438",
+        behavior: "always fails open",
+      },
+      {
+        hook: "http_tool_result",
+        lines: "1562-1568",
+        behavior: "always fails open",
+      },
     ];
 
     // Document for the fix
@@ -283,7 +302,7 @@ describe("EVIDENCE: Vulnerability exists in source code", () => {
     const vulnerability = {
       file: "plugin/index.ts",
       line: 1409,
-      code: 'if (event.isStreaming) { return undefined; }',
+      code: "if (event.isStreaming) { return undefined; }",
       impact: "Streaming responses completely bypass output scanning",
     };
 

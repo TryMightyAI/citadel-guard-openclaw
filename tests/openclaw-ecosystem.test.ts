@@ -233,7 +233,8 @@ function registerCitadelGuard(
 describe("OpenClaw Ecosystem Integration", () => {
   beforeEach(() => {
     mockFetch.mockReset();
-    process.env.CITADEL_API_KEY = undefined;
+    // Must use Reflect.deleteProperty, not assignment (process.env coerces undefined to "undefined")
+    Reflect.deleteProperty(process.env, "CITADEL_API_KEY");
   });
 
   // =========================================================================

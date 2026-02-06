@@ -81,15 +81,18 @@ export class MetricsCollector {
   private startedAt = Date.now();
   private latencySamples: number[] = [];
   private maxLatencySamples = 1000;
+  // Cache sorted samples to avoid O(n log n) sort on every getMetrics() call
+  private cachedSortedSamples: number[] | null = null;
 
   private cache?: LRUCache<unknown>;
   private logInterval?: ReturnType<typeof setInterval>;
 
-  // Session tracking
+  // Session tracking with bounded size to prevent memory leaks
   private sessions = new Map<
     string,
     { firstSeen: number; turnCount: number; blockedCount: number }
   >();
+  private readonly maxSessions = 50000;
 
   /**
    * Record a scan result
@@ -126,8 +129,9 @@ export class MetricsCollector {
       else this.allowedTotal++;
     }
 
-    // Track latency (rolling window)
+    // Track latency (rolling window) - invalidate cache on change
     this.latencySamples.push(params.latencyMs);
+    this.cachedSortedSamples = null; // Invalidate cache
     if (this.latencySamples.length > this.maxLatencySamples) {
       this.latencySamples.shift();
     }
@@ -153,34 +157,61 @@ export class MetricsCollector {
   }
 
   /**
-   * Track session activity
+   * Track session activity with bounded size
+   * Uses LRU-style eviction to prevent unbounded memory growth
    */
   private trackSession(sessionId: string, blocked: boolean): void {
     const existing = this.sessions.get(sessionId);
     if (existing) {
       existing.turnCount++;
       if (blocked) existing.blockedCount++;
-    } else {
-      this.sessions.set(sessionId, {
-        firstSeen: Date.now(),
-        turnCount: 1,
-        blockedCount: blocked ? 1 : 0,
-      });
+      return; // Skip cleanup if just updating existing session
     }
 
-    // Cleanup old sessions (>1 hour)
-    const cutoff = Date.now() - 60 * 60 * 1000;
-    for (const [id, data] of this.sessions) {
-      if (data.firstSeen < cutoff) this.sessions.delete(id);
+    // Only cleanup when adding new sessions to avoid O(n) on every call
+    if (this.sessions.size >= this.maxSessions) {
+      // Evict oldest 10% of sessions
+      const toEvict = Math.floor(this.maxSessions * 0.1);
+      let evicted = 0;
+      for (const [id] of this.sessions) {
+        if (evicted >= toEvict) break;
+        this.sessions.delete(id);
+        evicted++;
+      }
     }
+
+    // Also clean up old sessions (>1 hour) but only when at capacity
+    if (this.sessions.size >= this.maxSessions * 0.9) {
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      for (const [id, data] of this.sessions) {
+        if (data.firstSeen < cutoff) this.sessions.delete(id);
+      }
+    }
+
+    this.sessions.set(sessionId, {
+      firstSeen: Date.now(),
+      turnCount: 1,
+      blockedCount: blocked ? 1 : 0,
+    });
   }
 
   /**
-   * Calculate percentile from sorted array
+   * Get sorted samples with caching to avoid O(n log n) on every call
    */
-  private percentile(arr: number[], p: number): number {
-    if (arr.length === 0) return 0;
-    const sorted = [...arr].sort((a, b) => a - b);
+  private getSortedSamples(): number[] {
+    if (!this.cachedSortedSamples) {
+      this.cachedSortedSamples = [...this.latencySamples].sort((a, b) => a - b);
+    }
+    return this.cachedSortedSamples;
+  }
+
+  /**
+   * Calculate percentile from cached sorted array
+   * O(1) for repeated calls until samples change
+   */
+  private percentile(p: number): number {
+    const sorted = this.getSortedSamples();
+    if (sorted.length === 0) return 0;
     const idx = Math.ceil((p / 100) * sorted.length) - 1;
     return sorted[Math.max(0, idx)];
   }
@@ -215,9 +246,9 @@ export class MetricsCollector {
       cacheMisses: this.cacheMisses,
       cacheSize: this.cache?.size || 0,
       avgLatencyMs: Math.round(avg),
-      p50LatencyMs: this.percentile(samples, 50),
-      p95LatencyMs: this.percentile(samples, 95),
-      p99LatencyMs: this.percentile(samples, 99),
+      p50LatencyMs: this.percentile(50),
+      p95LatencyMs: this.percentile(95),
+      p99LatencyMs: this.percentile(99),
       activeSessions: this.sessions.size,
       totalTurns,
       timeouts: this.timeouts,
@@ -283,6 +314,7 @@ export class MetricsCollector {
     this.rateLimits = 0;
     this.authErrors = 0;
     this.latencySamples = [];
+    this.cachedSortedSamples = null;
     this.sessions.clear();
     this.startedAt = Date.now();
   }

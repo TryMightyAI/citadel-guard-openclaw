@@ -60,7 +60,9 @@ export function validateCitadelArgs(args: string[]): string[] {
   return args.filter((arg) => {
     // Reject args with shell metacharacters
     if (SHELL_METACHARACTERS.test(arg)) {
-      console.warn(`[citadel-guard] Rejected unsafe argument: ${arg.slice(0, 20)}...`);
+      console.warn(
+        `[citadel-guard] Rejected unsafe argument: ${arg.slice(0, 20)}...`,
+      );
       return false;
     }
     return true;
@@ -104,7 +106,10 @@ export interface FailOpenConfig {
  * @param scanType - The type of scan being performed
  * @returns true if we should allow through on failure, false to block
  */
-export function shouldFailOpen(config: FailOpenConfig, scanType: ScanType): boolean {
+export function shouldFailOpen(
+  config: FailOpenConfig,
+  scanType: ScanType,
+): boolean {
   switch (scanType) {
     case "inbound":
     case "tool_args":
@@ -223,7 +228,9 @@ export function logScanResult(
   score?: number,
 ): void {
   const scoreStr = score !== undefined ? ` (score: ${score})` : "";
-  console.log(`[citadel-guard] ${operation} scan result: ${decision}${scoreStr}`);
+  console.log(
+    `[citadel-guard] ${operation} scan result: ${decision}${scoreStr}`,
+  );
 }
 
 /**

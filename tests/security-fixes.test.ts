@@ -6,17 +6,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  isAllowedBinaryPath,
-  validateCitadelArgs,
-  shouldFailOpen,
+  type FailOpenConfig,
+  generateDetailedHealthResponse,
+  generateHealthResponse,
   handleScanFailure,
   handleStreamingResponse,
+  isAllowedBinaryPath,
+  logBlockEvent,
   logScanOperation,
   logScanResult,
-  logBlockEvent,
-  generateHealthResponse,
-  generateDetailedHealthResponse,
-  type FailOpenConfig,
+  shouldFailOpen,
+  validateCitadelArgs,
 } from "../plugin/security-fixes";
 
 // ============================================================================
@@ -101,23 +101,38 @@ describe("FIX: Configurable Fail-Open", () => {
       const config: FailOpenConfig = { failOpen: false, failOpenInbound: true };
       expect(shouldFailOpen(config, "inbound")).toBe(true);
 
-      const config2: FailOpenConfig = { failOpen: true, failOpenInbound: false };
+      const config2: FailOpenConfig = {
+        failOpen: true,
+        failOpenInbound: false,
+      };
       expect(shouldFailOpen(config2, "inbound")).toBe(false);
     });
 
     it("uses failOpenOutbound for outbound scans", () => {
-      const config: FailOpenConfig = { failOpen: false, failOpenOutbound: true };
+      const config: FailOpenConfig = {
+        failOpen: false,
+        failOpenOutbound: true,
+      };
       expect(shouldFailOpen(config, "outbound")).toBe(true);
 
-      const config2: FailOpenConfig = { failOpen: true, failOpenOutbound: false };
+      const config2: FailOpenConfig = {
+        failOpen: true,
+        failOpenOutbound: false,
+      };
       expect(shouldFailOpen(config2, "outbound")).toBe(false);
     });
 
     it("uses failOpenToolResults for tool_results scans", () => {
-      const config: FailOpenConfig = { failOpen: false, failOpenToolResults: true };
+      const config: FailOpenConfig = {
+        failOpen: false,
+        failOpenToolResults: true,
+      };
       expect(shouldFailOpen(config, "tool_results")).toBe(true);
 
-      const config2: FailOpenConfig = { failOpen: true, failOpenToolResults: false };
+      const config2: FailOpenConfig = {
+        failOpen: true,
+        failOpenToolResults: false,
+      };
       expect(shouldFailOpen(config2, "tool_results")).toBe(false);
     });
 
@@ -157,10 +172,14 @@ describe("FIX: Configurable Fail-Open", () => {
       };
 
       // Inbound should block (uses failOpen)
-      expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
+      expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(
+        true,
+      );
 
       // Outbound should allow (uses failOpenOutbound)
-      expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
+      expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(
+        false,
+      );
     });
   });
 });
@@ -177,7 +196,9 @@ describe("FIX: Streaming Response Handling", () => {
     });
 
     it("blocks streaming when blockStreamingResponses=true", () => {
-      const result = handleStreamingResponse(true, { blockStreamingResponses: true });
+      const result = handleStreamingResponse(true, {
+        blockStreamingResponses: true,
+      });
 
       expect(result).not.toBeUndefined();
       expect(result?.block).toBe(true);
@@ -249,9 +270,7 @@ describe("FIX: Secure Logging", () => {
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("BLOCK"),
       );
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("95"),
-      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("95"));
     });
   });
 
@@ -333,13 +352,19 @@ describe("FIX: Integration Tests", () => {
     };
 
     // Inbound scan failure should block
-    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(
+      true,
+    );
 
     // Outbound scan failure should block
-    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(true);
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(
+      true,
+    );
 
     // Tool results scan failure should block
-    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(true);
+    expect(
+      handleScanFailure(config, "error", "test", "tool_results").block,
+    ).toBe(true);
 
     // Streaming should block
     expect(handleStreamingResponse(true, config)?.block).toBe(true);
@@ -355,9 +380,15 @@ describe("FIX: Integration Tests", () => {
     };
 
     // All failures should allow through
-    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(false);
-    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
-    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(
+      false,
+    );
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(
+      false,
+    );
+    expect(
+      handleScanFailure(config, "error", "test", "tool_results").block,
+    ).toBe(false);
     expect(handleStreamingResponse(true, config)).toBeUndefined();
   });
 
@@ -370,9 +401,15 @@ describe("FIX: Integration Tests", () => {
       blockStreamingResponses: true, // Block streaming
     };
 
-    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(true);
-    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(false);
-    expect(handleScanFailure(config, "error", "test", "tool_results").block).toBe(false);
+    expect(handleScanFailure(config, "error", "test", "inbound").block).toBe(
+      true,
+    );
+    expect(handleScanFailure(config, "error", "test", "outbound").block).toBe(
+      false,
+    );
+    expect(
+      handleScanFailure(config, "error", "test", "tool_results").block,
+    ).toBe(false);
     expect(handleStreamingResponse(true, config)?.block).toBe(true);
   });
 });

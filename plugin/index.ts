@@ -10,10 +10,10 @@ import type {
 import { LRUCache } from "./cache";
 import { MetricsCollector } from "./metrics";
 import {
-  type NormalizedScanResult,
-  type RawScanResult,
   type MultimodalItem,
+  type NormalizedScanResult,
   type ProScanParams,
+  type RawScanResult,
   isProApiKey,
   requestScanOss,
   requestScanPro,
@@ -23,17 +23,18 @@ import {
   CircuitBreaker,
   CircuitOpenError,
   TenantRateLimitHandler,
-  sanitizeSessionId,
+  detectLocalPatterns,
   isPayloadWithinLimits,
+  sanitizeSessionId,
   truncatePayload,
 } from "./security";
 import {
-  isAllowedBinaryPath,
-  validateCitadelArgs,
-  handleStreamingResponse,
-  shouldFailOpen,
-  handleScanFailure,
   type ScanType,
+  handleScanFailure,
+  handleStreamingResponse,
+  isAllowedBinaryPath,
+  shouldFailOpen,
+  validateCitadelArgs,
 } from "./security-fixes";
 
 const DEFAULT_PORT = 3000;
@@ -106,41 +107,83 @@ const circuitBreaker = new CircuitBreaker({
 const MAX_PAYLOAD_SIZE = 1024 * 1024;
 
 // Track scan_group_id from input scans for linking to output scans
-// Key: sessionId, Value: { scanGroupId, timestamp }
-const scanGroupTracker = new Map<
-  string,
-  { scanGroupId: string; timestamp: number }
->();
+// Uses bounded LRU-style tracking with periodic cleanup to prevent memory leaks
 const SCAN_GROUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const SCAN_GROUP_MAX_SIZE = 10000;
+const SCAN_GROUP_CLEANUP_INTERVAL = 60000; // 1 minute
+
+class ScanGroupTracker {
+  private map = new Map<string, { scanGroupId: string; timestamp: number }>();
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // Periodic cleanup independent of traffic - prevents unbounded growth
+    this.cleanupTimer = setInterval(
+      () => this.cleanup(),
+      SCAN_GROUP_CLEANUP_INTERVAL,
+    );
+    // Prevent timer from keeping process alive
+    if (this.cleanupTimer.unref) {
+      this.cleanupTimer.unref();
+    }
+  }
+
+  track(sessionId: string | undefined, scanGroupId: string | undefined): void {
+    if (!sessionId || !scanGroupId) return;
+
+    // Evict oldest if at capacity (O(1) amortized)
+    if (this.map.size >= SCAN_GROUP_MAX_SIZE) {
+      const firstKey = this.map.keys().next().value;
+      if (firstKey) this.map.delete(firstKey);
+    }
+
+    this.map.set(sessionId, { scanGroupId, timestamp: Date.now() });
+  }
+
+  get(sessionId: string | undefined): string | undefined {
+    if (!sessionId) return undefined;
+    const entry = this.map.get(sessionId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > SCAN_GROUP_TTL_MS) {
+      this.map.delete(sessionId);
+      return undefined;
+    }
+    return entry.scanGroupId;
+  }
+
+  private cleanup(): void {
+    const cutoff = Date.now() - SCAN_GROUP_TTL_MS;
+    for (const [key, value] of this.map) {
+      if (value.timestamp < cutoff) {
+        this.map.delete(key);
+      }
+    }
+  }
+
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.map.clear();
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
+const scanGroupTracker = new ScanGroupTracker();
 
 function trackScanGroupId(
   sessionId: string | undefined,
   scanGroupId: string | undefined,
 ): void {
-  if (!sessionId || !scanGroupId) return;
-  scanGroupTracker.set(sessionId, { scanGroupId, timestamp: Date.now() });
-
-  // Cleanup old entries
-  const cutoff = Date.now() - SCAN_GROUP_TTL_MS;
-  for (const [key, value] of scanGroupTracker) {
-    if (value.timestamp < cutoff) {
-      scanGroupTracker.delete(key);
-    }
-  }
+  scanGroupTracker.track(sessionId, scanGroupId);
 }
 
 function getScanGroupId(sessionId: string | undefined): string | undefined {
-  if (!sessionId) return undefined;
-  const entry = scanGroupTracker.get(sessionId);
-  if (!entry) return undefined;
-
-  // Check if expired
-  if (Date.now() - entry.timestamp > SCAN_GROUP_TTL_MS) {
-    scanGroupTracker.delete(sessionId);
-    return undefined;
-  }
-
-  return entry.scanGroupId;
+  return scanGroupTracker.get(sessionId);
 }
 
 const toolParameters = {
@@ -365,7 +408,7 @@ function extractMultimodalContent(
         } else if (type === "image_url" && partObj.image_url) {
           // Handle image_url with data URL or external URL
           const imgUrl = partObj.image_url as { url?: string };
-          if (imgUrl.url && imgUrl.url.startsWith("data:")) {
+          if (imgUrl.url?.startsWith("data:")) {
             // Data URL: data:image/png;base64,<base64data>
             const match = imgUrl.url.match(/^data:([^;]+);base64,(.+)$/);
             if (match) {
@@ -519,23 +562,6 @@ function extractSessionId(
 }
 
 // ============================================================================
-// Fail behavior handling - uses functions from security-fixes.ts
-// ============================================================================
-
-/**
- * Wrapper around handleScanFailure for consistency with existing code.
- * Uses the imported functions from security-fixes.ts to avoid DRY violations.
- */
-function handleScanError(
-  cfg: CitadelConfig,
-  error: string,
-  context: string,
-  scanType: ScanType = "inbound",
-): { block: boolean; reason?: string } {
-  return handleScanFailure(cfg, error, context, scanType);
-}
-
-// ============================================================================
 // Main scan function with caching and metrics
 // ============================================================================
 
@@ -551,10 +577,25 @@ async function scanWithCitadel(params: {
   documents?: MultimodalItem[];
   // Pro API options
   analysisMode?: "fast" | "secure" | "comprehensive";
-  profile?: "strict" | "balanced" | "permissive" | "code_assistant" | "ai_safety";
+  profile?:
+    | "strict"
+    | "balanced"
+    | "permissive"
+    | "code_assistant"
+    | "ai_safety";
   originalPrompt?: string; // For output scanning context
 }): Promise<RawScanResult> {
-  const { text, mode, scanGroupId, cfg, images, documents, analysisMode, profile, originalPrompt } = params;
+  const {
+    text,
+    mode,
+    scanGroupId,
+    cfg,
+    images,
+    documents,
+    analysisMode,
+    profile,
+    originalPrompt,
+  } = params;
   let scanText = text;
   // Validate and sanitize session ID
   const sessionId = sanitizeSessionId(params.sessionId);
@@ -578,6 +619,30 @@ async function scanWithCitadel(params: {
       };
     }
     scanText = truncatePayload(text, MAX_PAYLOAD_SIZE);
+  }
+
+  // Local CVE pattern detection (defense-in-depth)
+  const localMatch = detectLocalPatterns(scanText, mode);
+  if (localMatch?.blocked) {
+    console.log(
+      `[citadel-guard] LOCAL BLOCK: ${localMatch.reason} (${localMatch.cve})`,
+    );
+    metricsCollector.recordScan({
+      mode,
+      decision: "BLOCK",
+      isPro,
+      latencyMs: Date.now() - startTime,
+    });
+    return {
+      ok: true,
+      data: {
+        decision: "BLOCK",
+        score: 100,
+        reason: localMatch.reason,
+        rawResponse: { localPattern: localMatch.cve },
+      },
+      isPro,
+    };
   }
 
   // Check circuit breaker state
@@ -662,12 +727,7 @@ async function scanWithCitadel(params: {
     scanCache &&
     scanText.length <= MAX_CACHE_PAYLOAD_SIZE
   ) {
-    const cacheKey = scanCache.generateKey(
-      mode,
-      sessionId,
-      scanText,
-      tenantId,
-    );
+    const cacheKey = scanCache.generateKey(mode, sessionId, scanText, tenantId);
     const cached = scanCache.get(cacheKey);
     if (cached) {
       metricsCollector.recordCacheHit();
@@ -774,12 +834,7 @@ async function scanWithCitadel(params: {
     scanCache &&
     scanText.length <= MAX_CACHE_PAYLOAD_SIZE
   ) {
-    const cacheKey = scanCache.generateKey(
-      mode,
-      sessionId,
-      scanText,
-      tenantId,
-    );
+    const cacheKey = scanCache.generateKey(mode, sessionId, scanText, tenantId);
     scanCache.set(cacheKey, result.data);
   }
 
@@ -970,9 +1025,10 @@ function startCitadelSidecar(
   const args = validateCitadelArgs(rawArgs);
 
   const logPath = path.join(ctx.stateDir, "citadel.log");
-  const out = fs.openSync(logPath, "a");
+  let out: number | undefined;
 
   try {
+    out = fs.openSync(logPath, "a");
     citadelProcess = spawn(bin, args, {
       stdio: ["ignore", out, out],
       env: { ...process.env },
@@ -980,7 +1036,18 @@ function startCitadelSidecar(
     ctx.logger.info(
       `[citadel-guard] started citadel (${bin} ${args.join(" ")})`,
     );
+    // Close the FD in parent process after child inherits it
+    // The child process will keep the file open
+    fs.closeSync(out);
   } catch (err) {
+    // Close FD on failure to prevent leak
+    if (out !== undefined) {
+      try {
+        fs.closeSync(out);
+      } catch {
+        // Ignore close errors
+      }
+    }
     ctx.logger.error?.(
       `[citadel-guard] failed to start citadel: ${String(err)}`,
     );
@@ -1089,7 +1156,7 @@ export default function register(api: OpenClawPluginApi) {
     });
 
     if (!result.ok || !result.data) {
-      const { block, reason } = handleScanError(
+      const { block, reason } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "message_received",
@@ -1146,7 +1213,7 @@ export default function register(api: OpenClawPluginApi) {
 
     // FIX: Use configurable fail behavior for outbound
     if (!result.ok || !result.data) {
-      const { block } = handleScanError(
+      const { block } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "message_sending",
@@ -1214,7 +1281,7 @@ export default function register(api: OpenClawPluginApi) {
         };
       }
       // Non-dangerous tools fail based on config
-      const { block, reason } = handleScanError(
+      const { block, reason } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "before_tool_call",
@@ -1243,10 +1310,12 @@ export default function register(api: OpenClawPluginApi) {
   // -------------------------------------------------------------------------
   // Hook: after_tool_call (indirect injection detection)
   // -------------------------------------------------------------------------
-  const toolResultCache = new Map<
-    string,
-    { blocked: boolean; reason?: string }
-  >();
+  // Use bounded LRU cache with TTL to prevent memory leaks
+  // Tool results are ephemeral - 30 second TTL is sufficient
+  const toolResultCache = new LRUCache<{ blocked: boolean; reason?: string }>(
+    200, // maxSize: bounded memory
+    30000, // ttlMs: 30 seconds - tool results are short-lived
+  );
 
   api.on("after_tool_call", async (event, context) => {
     const cfg = resolveConfigFromApi(api);
@@ -1276,7 +1345,7 @@ export default function register(api: OpenClawPluginApi) {
 
     // FIX: Use configurable fail behavior for tool results
     if (!result.ok || !result.data) {
-      const { block } = handleScanError(
+      const { block } = handleScanFailure(
         cfg,
         result.error || "unknown",
         `after_tool_call(${event.toolName})`,
@@ -1301,17 +1370,13 @@ export default function register(api: OpenClawPluginApi) {
       );
       const cacheKey = buildToolResultCacheKey(event.toolName, resultText);
       if (!cacheKey) return;
+      // LRUCache handles eviction automatically - no manual cleanup needed
       toolResultCache.set(cacheKey, {
         blocked: true,
         reason: String(
           result.data.reason ?? result.data.decision ?? "indirect_injection",
         ),
       });
-      // Cleanup old entries
-      if (toolResultCache.size > 100) {
-        const firstKey = toolResultCache.keys().next().value;
-        if (firstKey) toolResultCache.delete(firstKey);
-      }
     }
   });
 
@@ -1409,7 +1474,7 @@ export default function register(api: OpenClawPluginApi) {
     });
 
     if (!result.ok || !result.data) {
-      const { block, reason } = handleScanError(
+      const { block, reason } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "http_request_received",
@@ -1492,7 +1557,7 @@ export default function register(api: OpenClawPluginApi) {
 
     // FIX: Use configurable fail behavior for outbound
     if (!result.ok || !result.data) {
-      const { block } = handleScanError(
+      const { block } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "http_response_sending",
@@ -1565,7 +1630,7 @@ export default function register(api: OpenClawPluginApi) {
           blockReason: "Security check failed for dangerous tool",
         };
       }
-      const { block, reason } = handleScanError(
+      const { block, reason } = handleScanFailure(
         cfg,
         result.error || "unknown",
         "http_tool_invoke",
@@ -1630,7 +1695,7 @@ export default function register(api: OpenClawPluginApi) {
 
     // FIX: Use configurable fail behavior for tool results
     if (!result.ok || !result.data) {
-      const { block } = handleScanError(
+      const { block } = handleScanFailure(
         cfg,
         result.error || "unknown",
         `http_tool_result(${toolName})`,
@@ -1745,6 +1810,8 @@ export default function register(api: OpenClawPluginApi) {
     stop(ctx) {
       stopCitadelSidecar(ctx);
       metricsCollector.stopPeriodicLogging();
+      // Clean up scan group tracker to prevent resource leak
+      scanGroupTracker.destroy();
     },
   });
 }
