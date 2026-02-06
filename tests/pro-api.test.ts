@@ -23,8 +23,8 @@ global.fetch = mockFetch as unknown as typeof fetch;
 describe("Pro API", () => {
   beforeEach(() => {
     mockFetch.mockReset();
-    // Clear env var
-    process.env.CITADEL_API_KEY = undefined;
+    // Clear env var - must use Reflect.deleteProperty, not assignment (process.env coerces undefined to "undefined")
+    Reflect.deleteProperty(process.env, "CITADEL_API_KEY");
   });
 
   describe("isProApiKey", () => {

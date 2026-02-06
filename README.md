@@ -95,7 +95,7 @@ Visit [trymighty.ai](https://trymighty.ai) and create an account. Your API key l
 
 **Option A: Using OpenClaw CLI** (recommended)
 ```bash
-openclaw plugins install @trymightyai/citadel-guard-openclaw
+openclaw plugins install @mightyai/citadel-guard-openclaw
 ```
 
 **Option B: Using git clone** (for development)
@@ -192,8 +192,12 @@ go build -o citadel ./cmd/gateway
 ### Step 2: Start the scanner
 
 ```bash
+export CITADEL_AUTO_DOWNLOAD_MODEL=true
+export CITADEL_ENABLE_HUGOT=true
 ./citadel --port 3333
 ```
+
+On first run, this downloads the BERT model (~685MB) from HuggingFace for prompt injection classification. Subsequent starts use the cached model.
 
 Verify it's running:
 ```bash
@@ -205,7 +209,7 @@ curl http://localhost:3333/health
 
 **Option A: Using OpenClaw CLI** (recommended)
 ```bash
-openclaw plugins install @trymightyai/citadel-guard-openclaw
+openclaw plugins install @mightyai/citadel-guard-openclaw
 ```
 
 **Option B: Using git clone** (for development)

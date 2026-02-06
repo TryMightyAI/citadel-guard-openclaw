@@ -741,12 +741,13 @@ describe("API Routing - PROOF of OSS vs Pro behavior", () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
-    process.env.CITADEL_API_KEY = undefined;
+    // Must use Reflect.deleteProperty, not assignment (process.env coerces undefined to "undefined")
+    Reflect.deleteProperty(process.env, "CITADEL_API_KEY");
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    process.env.CITADEL_API_KEY = undefined;
+    Reflect.deleteProperty(process.env, "CITADEL_API_KEY");
   });
 
   // ==========================================================================

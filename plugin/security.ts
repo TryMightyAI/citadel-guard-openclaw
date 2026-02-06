@@ -9,6 +9,8 @@
  * - Tenant-isolated rate limiting
  */
 
+import { timingSafeEqual } from "node:crypto";
+
 // ============================================================================
 // Circuit Breaker
 // ============================================================================
@@ -58,7 +60,9 @@ export class CircuitBreaker {
       if (this.halfOpenAttempts > this.config.halfOpenMaxAttempts) {
         this.state = "open";
         this.lastFailure = Date.now();
-        throw new CircuitOpenError("Circuit breaker re-opened after half-open failures");
+        throw new CircuitOpenError(
+          "Circuit breaker re-opened after half-open failures",
+        );
       }
     }
 
@@ -195,25 +199,30 @@ export function safeJsonParse<T = unknown>(input: string): T {
 /**
  * Compare two strings in constant time to prevent timing attacks
  * This is important for API key validation
+ * Uses Node's crypto.timingSafeEqual for cryptographically safe comparison
  */
 export function constantTimeEqual(a: string, b: string): boolean {
-  // Convert to buffers for byte comparison
-  const aBytes = new TextEncoder().encode(a);
-  const bBytes = new TextEncoder().encode(b);
+  const aBuffer = Buffer.from(a, "utf-8");
+  const bBuffer = Buffer.from(b, "utf-8");
 
-  // Different lengths = not equal, but still do constant time check
-  // to avoid leaking length information
-  const maxLen = Math.max(aBytes.length, bBytes.length);
-  let result = aBytes.length === bBytes.length ? 0 : 1;
+  // Different lengths = not equal, but we must still do constant-time
+  // comparison to avoid leaking length information through timing
+  const maxLen = Math.max(aBuffer.length, bBuffer.length);
 
-  for (let i = 0; i < maxLen; i++) {
-    // Use 0 for out-of-bounds to maintain constant time
-    const aByte = i < aBytes.length ? aBytes[i] : 0;
-    const bByte = i < bBytes.length ? bBytes[i] : 0;
-    result |= aByte ^ bByte;
-  }
+  // Pad shorter buffer to prevent length leak via timingSafeEqual
+  // (timingSafeEqual requires equal length buffers)
+  const aPadded = Buffer.alloc(maxLen);
+  const bPadded = Buffer.alloc(maxLen);
 
-  return result === 0;
+  aBuffer.copy(aPadded);
+  bBuffer.copy(bPadded);
+
+  // Use Node's cryptographically safe timing comparison
+  const lengthsEqual = aBuffer.length === bBuffer.length;
+  const contentsEqual = timingSafeEqual(aPadded, bPadded);
+
+  // Both conditions must be true - lengths must match AND contents must match
+  return lengthsEqual && contentsEqual;
 }
 
 // ============================================================================
@@ -378,16 +387,69 @@ export function isPayloadWithinLimits(
   maxSize = MAX_PAYLOAD_SIZE,
 ): boolean {
   const size =
-    typeof payload === "string" ? payload.length : JSON.stringify(payload).length;
+    typeof payload === "string"
+      ? payload.length
+      : JSON.stringify(payload).length;
   return size <= maxSize;
 }
 
 /**
  * Truncate a payload to max size
  */
-export function truncatePayload(payload: string, maxSize = MAX_PAYLOAD_SIZE): string {
+export function truncatePayload(
+  payload: string,
+  maxSize = MAX_PAYLOAD_SIZE,
+): string {
   if (payload.length <= maxSize) return payload;
   return `${payload.slice(0, maxSize - 20)}... [truncated]`;
+}
+
+// ============================================================================
+// CVE Local Pattern Detection (Defense-in-Depth)
+// ============================================================================
+
+/**
+ * Known dangerous patterns that should be blocked locally,
+ * regardless of what the upstream scanner returns.
+ *
+ * These provide defense-in-depth for known CVEs where the
+ * heuristic scanner might miss vague natural-language variants.
+ */
+
+export interface LocalDetectionResult {
+  blocked: boolean;
+  cve?: string;
+  reason?: string;
+}
+
+/**
+ * CVE-2026-25253: gatewayUrl injection leading to 1-click RCE in OpenClaw.
+ * Any user input referencing `gatewayUrl` is suspicious — there's no
+ * legitimate reason for end-user messages to contain this parameter.
+ */
+const GATEWAY_URL_PATTERN = /\bgatewayUrl\b/i;
+
+/**
+ * Scan text for locally-known CVE patterns.
+ * Returns a detection result if a pattern matches, null otherwise.
+ */
+export function detectLocalPatterns(
+  text: string,
+  mode: "input" | "output",
+): LocalDetectionResult | null {
+  // Only scan inbound text — outbound scanning for these patterns
+  // would cause false positives on legitimate security discussions
+  if (mode !== "input") return null;
+
+  if (GATEWAY_URL_PATTERN.test(text)) {
+    return {
+      blocked: true,
+      cve: "CVE-2026-25253",
+      reason: "gatewayUrl injection attempt detected",
+    };
+  }
+
+  return null;
 }
 
 // ============================================================================
