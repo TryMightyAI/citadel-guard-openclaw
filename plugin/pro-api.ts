@@ -89,7 +89,10 @@ export function normalizeScanResult(
 
   // Derive decision from output scan fields when no explicit decision
   if (!decision) {
-    if (res.is_safe === false || (typeof res.risk_score === "number" && (res.risk_score as number) >= 70)) {
+    if (
+      res.is_safe === false ||
+      (typeof res.risk_score === "number" && (res.risk_score as number) >= 70)
+    ) {
       decision = "BLOCK";
     } else {
       decision = "ALLOW";

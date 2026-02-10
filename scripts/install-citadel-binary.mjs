@@ -6,6 +6,7 @@
  * Falls back gracefully if download fails - Pro API doesn't need the binary.
  */
 
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -20,7 +21,6 @@ import http from "node:http";
 import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -69,7 +69,10 @@ const MODEL_FILES = [
  */
 function isAlreadyInstalled() {
   try {
-    const result = execSync("which citadel", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const result = execSync("which citadel", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
     if (result) return result;
   } catch {
     // which returned non-zero
@@ -278,7 +281,11 @@ async function downloadWithProgress(url, dest, expectedSize, label) {
           ) {
             const location = res.headers.location;
             if (!location) {
-              reject(new Error(`Redirect ${res.statusCode} without Location header for ${label}`));
+              reject(
+                new Error(
+                  `Redirect ${res.statusCode} without Location header for ${label}`,
+                ),
+              );
               return;
             }
             // Resolve relative URLs against current URL
@@ -294,7 +301,8 @@ async function downloadWithProgress(url, dest, expectedSize, label) {
             return;
           }
 
-          const contentLength = parseInt(res.headers["content-length"], 10) || expectedSize;
+          const contentLength =
+            Number.parseInt(res.headers["content-length"], 10) || expectedSize;
           let downloaded = 0;
 
           const file = createWriteStream(dest);
@@ -382,12 +390,16 @@ async function downloadModelFiles() {
           // ignore cleanup errors
         }
         if (attempt < 3) {
-          const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
-          warn(`${file.name} download failed (attempt ${attempt}/3): ${err.message}`);
+          const delay = 2 ** (attempt - 1) * 1000; // 1s, 2s, 4s
+          warn(
+            `${file.name} download failed (attempt ${attempt}/3): ${err.message}`,
+          );
           warn(`Retrying in ${delay / 1000}s...`);
           await new Promise((r) => setTimeout(r, delay));
         } else {
-          error(`Failed to download ${file.name} after 3 attempts: ${err.message}`);
+          error(
+            `Failed to download ${file.name} after 3 attempts: ${err.message}`,
+          );
         }
       }
     }
