@@ -6,7 +6,6 @@
  * Falls back gracefully if download fails - Pro API doesn't need the binary.
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -14,11 +13,14 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   unlinkSync,
 } from "node:fs";
+import http from "node:http";
 import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,13 +51,28 @@ const info = (msg) => console.log(`${GREEN}[citadel]${RESET} ${msg}`);
 const warn = (msg) => console.log(`${YELLOW}[citadel]${RESET} ${msg}`);
 const error = (msg) => console.log(`${RED}[citadel]${RESET} ${msg}`);
 
+// BERT model download configuration
+const SKIP_MODEL = process.env.CITADEL_SKIP_MODEL === "1";
+const HF_REPO = "tihilya/modernbert-base-prompt-injection-detection";
+const HF_BASE_URL = `https://huggingface.co/${HF_REPO}/resolve/main`;
+const MODEL_DIR = join(__dirname, "..", "models", "modernbert-base");
+const MODEL_FILES = [
+  { name: "config.json", size: 1403 },
+  { name: "model.onnx", size: 599000438 },
+  { name: "tokenizer.json", size: 3583228 },
+  { name: "tokenizer_config.json", size: 20840 },
+  { name: "special_tokens_map.json", size: 694 },
+];
+
 /**
  * Check if citadel is already installed globally
  */
 function isAlreadyInstalled() {
-  const result = spawnSync("which", ["citadel"], { encoding: "utf8" });
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim();
+  try {
+    const result = execSync("which citadel", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    if (result) return result;
+  } catch {
+    // which returned non-zero
   }
 
   // Also check common locations
@@ -230,6 +247,162 @@ async function verifyChecksum(filePath, binaryName, version) {
 }
 
 /**
+ * Download a file with progress reporting and redirect handling (301/302/307).
+ * HuggingFace uses 307 for small files (relative redirect) and 302 for large files (absolute redirect).
+ */
+async function downloadWithProgress(url, dest, expectedSize, label) {
+  return new Promise((resolve, reject) => {
+    let lastPercent = -1;
+
+    const request = (currentUrl, redirectCount = 0) => {
+      if (redirectCount > 5) {
+        reject(new Error(`Too many redirects for ${label}`));
+        return;
+      }
+
+      const parsedUrl = new URL(currentUrl);
+      const client = parsedUrl.protocol === "https:" ? https : http;
+      const options = {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname + parsedUrl.search,
+        headers: { "User-Agent": "citadel-guard-installer" },
+      };
+
+      client
+        .get(options, (res) => {
+          // Handle 301, 302, and 307 redirects
+          if (
+            res.statusCode === 301 ||
+            res.statusCode === 302 ||
+            res.statusCode === 307
+          ) {
+            const location = res.headers.location;
+            if (!location) {
+              reject(new Error(`Redirect ${res.statusCode} without Location header for ${label}`));
+              return;
+            }
+            // Resolve relative URLs against current URL
+            const redirectUrl = new URL(location, currentUrl).toString();
+            res.resume(); // Consume response to free up socket
+            request(redirectUrl, redirectCount + 1);
+            return;
+          }
+
+          if (res.statusCode !== 200) {
+            res.resume();
+            reject(new Error(`HTTP ${res.statusCode} downloading ${label}`));
+            return;
+          }
+
+          const contentLength = parseInt(res.headers["content-length"], 10) || expectedSize;
+          let downloaded = 0;
+
+          const file = createWriteStream(dest);
+          res.on("data", (chunk) => {
+            downloaded += chunk.length;
+            if (contentLength > 1024 * 1024) {
+              // Show progress for files > 1MB
+              const percent = Math.floor((downloaded / contentLength) * 100);
+              const tenPercent = Math.floor(percent / 10) * 10;
+              if (tenPercent > lastPercent) {
+                lastPercent = tenPercent;
+                const downloadedMB = (downloaded / 1024 / 1024).toFixed(1);
+                const totalMB = (contentLength / 1024 / 1024).toFixed(1);
+                process.stdout.write(
+                  `\r${GREEN}[citadel]${RESET} ${label}: ${downloadedMB}MB / ${totalMB}MB (${tenPercent}%)`,
+                );
+              }
+            }
+          });
+
+          res.pipe(file);
+          file.on("finish", () => {
+            file.close();
+            if (contentLength > 1024 * 1024) {
+              process.stdout.write("\n"); // Newline after progress
+            }
+            resolve();
+          });
+          file.on("error", (err) => {
+            file.close();
+            reject(err);
+          });
+        })
+        .on("error", reject);
+    };
+
+    request(url);
+  });
+}
+
+/**
+ * Download BERT model files from HuggingFace.
+ * Downloads sequentially with retry logic. Non-fatal on failure.
+ */
+async function downloadModelFiles() {
+  if (SKIP_MODEL) {
+    info("Skipping BERT model download (CITADEL_SKIP_MODEL=1)");
+    return;
+  }
+
+  // Check if model is already downloaded
+  const onnxPath = join(MODEL_DIR, "model.onnx");
+  if (existsSync(onnxPath)) {
+    try {
+      const stat = statSync(onnxPath);
+      if (stat.size === 599000438) {
+        info("BERT model already downloaded, skipping");
+        return;
+      }
+      // Wrong size - re-download
+      warn("model.onnx has unexpected size, re-downloading...");
+    } catch {
+      // stat failed, re-download
+    }
+  }
+
+  info("Downloading BERT model (~575MB, first time only)...");
+  mkdirSync(MODEL_DIR, { recursive: true });
+
+  for (const file of MODEL_FILES) {
+    const url = `${HF_BASE_URL}/${file.name}`;
+    const dest = join(MODEL_DIR, file.name);
+    let success = false;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await downloadWithProgress(url, dest, file.size, file.name);
+        success = true;
+        break;
+      } catch (err) {
+        // Clean up partial file
+        try {
+          if (existsSync(dest)) unlinkSync(dest);
+        } catch {
+          // ignore cleanup errors
+        }
+        if (attempt < 3) {
+          const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+          warn(`${file.name} download failed (attempt ${attempt}/3): ${err.message}`);
+          warn(`Retrying in ${delay / 1000}s...`);
+          await new Promise((r) => setTimeout(r, delay));
+        } else {
+          error(`Failed to download ${file.name} after 3 attempts: ${err.message}`);
+        }
+      }
+    }
+
+    if (!success) {
+      warn("BERT model download failed — ML detection will be unavailable");
+      warn("You can retry later: node scripts/install-citadel-binary.mjs");
+      return;
+    }
+  }
+
+  info("BERT model downloaded successfully");
+}
+
+/**
  * Main installation logic
  */
 async function main() {
@@ -256,6 +429,7 @@ async function main() {
   if (existingPath && !FORCE_DOWNLOAD) {
     info(`Citadel already installed: ${existingPath}`);
     info("Set CITADEL_FORCE_DOWNLOAD=1 to re-download/upgrade");
+    await downloadModelFiles();
     return;
   }
   if (existingPath && FORCE_DOWNLOAD) {
@@ -322,28 +496,7 @@ async function main() {
 
     info(`Installed to: ${installPath}`);
 
-    // Download BERT model automatically
-    info("Downloading BERT model (~685MB, first time only)...");
-    const modelResult = spawnSync(installPath, ["scan", "test"], {
-      encoding: "utf8",
-      timeout: 600000, // 10 minute timeout for model download
-      env: {
-        ...process.env,
-        CITADEL_AUTO_DOWNLOAD_MODEL: "true",
-        CITADEL_ENABLE_HUGOT: "true",
-      },
-    });
-
-    if (modelResult.status === 0) {
-      info("BERT model ready");
-    } else {
-      warn("Could not download BERT model automatically");
-      warn("Run with CITADEL_AUTO_DOWNLOAD_MODEL=true on first use:");
-      console.log(
-        "      CITADEL_AUTO_DOWNLOAD_MODEL=true CITADEL_ENABLE_HUGOT=true citadel serve 3333",
-      );
-      console.log("");
-    }
+    await downloadModelFiles();
 
     console.log("");
     info("Citadel scanner installed successfully!");

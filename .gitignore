@@ -28,6 +28,9 @@ pnpm-lock.yaml
 .DS_Store
 Thumbs.db
 
+# Downloaded ML models
+models/
+
 # Test coverage
 coverage/
 

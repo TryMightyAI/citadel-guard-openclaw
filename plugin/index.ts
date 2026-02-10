@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   OpenClawPluginApi,
   OpenClawPluginServiceContext,
@@ -36,6 +37,13 @@ import {
   shouldFailOpen,
   validateCitadelArgs,
 } from "./security-fixes";
+
+const MODEL_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "models",
+  "modernbert-base",
+);
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -1027,11 +1035,27 @@ function startCitadelSidecar(
   const logPath = path.join(ctx.stateDir, "citadel.log");
   let out: number | undefined;
 
+  // Check if BERT model is available and inject env vars
+  const modelOnnxPath = path.join(MODEL_DIR, "model.onnx");
+  const modelAvailable = fs.existsSync(modelOnnxPath);
+  if (modelAvailable) {
+    ctx.logger.info(`[citadel-guard] BERT model found at ${MODEL_DIR}`);
+  } else {
+    ctx.logger.info(
+      "[citadel-guard] BERT model not found, ML detection disabled",
+    );
+  }
+
   try {
     out = fs.openSync(logPath, "a");
     citadelProcess = spawn(bin, args, {
       stdio: ["ignore", out, out],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        ...(modelAvailable
+          ? { HUGOT_MODEL_PATH: MODEL_DIR, CITADEL_ENABLE_HUGOT: "true" }
+          : {}),
+      },
     });
     ctx.logger.info(
       `[citadel-guard] started citadel (${bin} ${args.join(" ")})`,

@@ -83,7 +83,19 @@ export function normalizeScanResult(
   }
 
   // OSS API format
-  const decision = String(res.decision ?? "ALLOW").toUpperCase();
+  // Input scans return: { decision, heuristic_score }
+  // Output scans return: { is_safe, risk_score, risk_level, findings }
+  let decision = String(res.decision ?? "").toUpperCase();
+
+  // Derive decision from output scan fields when no explicit decision
+  if (!decision) {
+    if (res.is_safe === false || (typeof res.risk_score === "number" && (res.risk_score as number) >= 70)) {
+      decision = "BLOCK";
+    } else {
+      decision = "ALLOW";
+    }
+  }
+
   const normalizedDecision =
     decision === "BLOCK" ? "BLOCK" : decision === "WARN" ? "WARN" : "ALLOW";
 
