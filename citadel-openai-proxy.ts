@@ -14,7 +14,10 @@
  * Then call: curl http://localhost:5050/v1/chat/completions -d '...'
  */
 
-function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+function parseBooleanEnv(
+  value: string | undefined,
+  defaultValue: boolean,
+): boolean {
   if (value === undefined) return defaultValue;
   const normalized = value.trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
@@ -104,10 +107,7 @@ function shouldScanRole(role: string | undefined): boolean {
   return false;
 }
 
-function extractTextParts(
-  content: unknown,
-  allowedTypes: string[],
-): string[] {
+function extractTextParts(content: unknown, allowedTypes: string[]): string[] {
   if (typeof content === "string") return [content];
 
   const parts: string[] = [];
@@ -150,9 +150,7 @@ async function scanInput(
 
     const result: CitadelScanResult = await resp.json();
     const decision =
-      typeof result.decision === "string"
-        ? result.decision.toUpperCase()
-        : "";
+      typeof result.decision === "string" ? result.decision.toUpperCase() : "";
 
     if (decision === "BLOCK" || result.is_safe === false) {
       return { allowed: false, reason: result.reason || "Blocked by Citadel" };
@@ -183,9 +181,7 @@ async function scanOutput(
 
     const result: CitadelScanResult = await resp.json();
     const decision =
-      typeof result.decision === "string"
-        ? result.decision.toUpperCase()
-        : "";
+      typeof result.decision === "string" ? result.decision.toUpperCase() : "";
 
     if (decision === "BLOCK" || result.is_safe === false) {
       return {
@@ -255,7 +251,9 @@ function extractUserContentParts(
           typeof itemObj.role === "string" ? itemObj.role : undefined;
 
         if (itemType === "message" && shouldScanRole(itemRole)) {
-          parts.push(...extractTextParts(itemObj.content, ["input_text", "text"]));
+          parts.push(
+            ...extractTextParts(itemObj.content, ["input_text", "text"]),
+          );
           continue;
         }
 
@@ -283,7 +281,10 @@ function extractUserContentParts(
   return parts.filter((part) => part.trim().length > 0);
 }
 
-async function readRequestBody(req: Request, maxBytes: number): Promise<string> {
+async function readRequestBody(
+  req: Request,
+  maxBytes: number,
+): Promise<string> {
   const contentLength = req.headers.get("content-length");
   if (contentLength) {
     const length = Number.parseInt(contentLength, 10);
@@ -401,18 +402,11 @@ const server = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    // Health check
+    // Health check - minimal response to avoid exposing internal URLs
     if (url.pathname === "/health") {
-      return new Response(
-        JSON.stringify({
-          status: "ok",
-          citadel: CITADEL_URL,
-          upstream: UPSTREAM_URL,
-        }),
-        {
-          headers: { "Content-Type": "application/json" },
-        },
-      );
+      return new Response(JSON.stringify({ status: "ok" }), {
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     // Proxy all OpenClaw HTTP endpoints that bypass hooks
@@ -451,7 +445,11 @@ const server = Bun.serve({
         return new Response("Invalid JSON", { status: 400 });
       }
 
-      const userParts = extractUserContentParts(body, isResponses, isToolsInvoke);
+      const userParts = extractUserContentParts(
+        body,
+        isResponses,
+        isToolsInvoke,
+      );
 
       // Scan input
       const endpoint = isToolsInvoke
@@ -461,8 +459,9 @@ const server = Bun.serve({
           : "/v1/chat/completions";
       if (userParts.length > 0) {
         for (const part of userParts) {
+          // FIX: Log content length only, not content itself
           console.log(
-            `[citadel-proxy] [${endpoint}] Scanning input: "${part.slice(0, 50)}..."`,
+            `[citadel-proxy] [${endpoint}] Scanning input (${part.length} chars)`,
           );
           const inputScan = await scanInput(part);
 
@@ -531,9 +530,8 @@ const server = Bun.serve({
 
       if (assistantParts.length > 0) {
         for (const part of assistantParts) {
-          console.log(
-            `[citadel-proxy] Scanning output: "${part.slice(0, 50)}..."`,
-          );
+          // FIX: Log content length only, not content itself
+          console.log(`[citadel-proxy] Scanning output (${part.length} chars)`);
           const outputScan = await scanOutput(part);
 
           if (!outputScan.safe) {

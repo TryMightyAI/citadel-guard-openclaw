@@ -83,7 +83,22 @@ export function normalizeScanResult(
   }
 
   // OSS API format
-  const decision = String(res.decision ?? "ALLOW").toUpperCase();
+  // Input scans return: { decision, heuristic_score }
+  // Output scans return: { is_safe, risk_score, risk_level, findings }
+  let decision = String(res.decision ?? "").toUpperCase();
+
+  // Derive decision from output scan fields when no explicit decision
+  if (!decision) {
+    if (
+      res.is_safe === false ||
+      (typeof res.risk_score === "number" && (res.risk_score as number) >= 70)
+    ) {
+      decision = "BLOCK";
+    } else {
+      decision = "ALLOW";
+    }
+  }
+
   const normalizedDecision =
     decision === "BLOCK" ? "BLOCK" : decision === "WARN" ? "WARN" : "ALLOW";
 
@@ -127,7 +142,12 @@ export interface ProScanParams {
   // Multimodal support
   contentType?: "auto" | "text" | "image" | "pdf" | "document";
   analysisMode?: "fast" | "secure" | "comprehensive";
-  profile?: "strict" | "balanced" | "permissive" | "code_assistant" | "ai_safety";
+  profile?:
+    | "strict"
+    | "balanced"
+    | "permissive"
+    | "code_assistant"
+    | "ai_safety";
   // Binary content (images, documents)
   images?: MultimodalItem[];
   documents?: MultimodalItem[];
@@ -138,7 +158,9 @@ export interface ProScanParams {
 /**
  * Request scan from Pro API (supports multimodal content)
  */
-export async function requestScanPro(params: ProScanParams): Promise<RawScanResult> {
+export async function requestScanPro(
+  params: ProScanParams,
+): Promise<RawScanResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), params.timeoutMs);
 
@@ -180,7 +202,11 @@ export async function requestScanPro(params: ProScanParams): Promise<RawScanResu
         const img = params.images[0];
         const mimeType = img.mimeType || "image/png";
         const blob = base64ToBlob(img.data, mimeType);
-        formData.append("file", blob, `image.${mimeType.split("/")[1] || "png"}`);
+        formData.append(
+          "file",
+          blob,
+          `image.${mimeType.split("/")[1] || "png"}`,
+        );
         if (!params.contentType || params.contentType === "auto") {
           formData.append("content_type", "image");
         }
@@ -191,7 +217,10 @@ export async function requestScanPro(params: ProScanParams): Promise<RawScanResu
         const ext = mimeType.includes("pdf") ? "pdf" : "doc";
         formData.append("file", blob, `document.${ext}`);
         if (!params.contentType || params.contentType === "auto") {
-          formData.append("content_type", mimeType.includes("pdf") ? "pdf" : "document");
+          formData.append(
+            "content_type",
+            mimeType.includes("pdf") ? "pdf" : "document",
+          );
         }
       }
 
@@ -220,7 +249,9 @@ export async function requestScanPro(params: ProScanParams): Promise<RawScanResu
           profile: params.profile || "balanced",
           ...(params.sessionId && { session_id: params.sessionId }),
           ...(params.scanGroupId && { scan_group_id: params.scanGroupId }),
-          ...(params.originalPrompt && { original_prompt: params.originalPrompt }),
+          ...(params.originalPrompt && {
+            original_prompt: params.originalPrompt,
+          }),
         }),
         signal: controller.signal,
       });
@@ -261,17 +292,19 @@ export async function requestScanPro(params: ProScanParams): Promise<RawScanResu
 
 /**
  * Convert base64 string to Blob for multipart upload
+ * Optimized: direct Uint8Array allocation without intermediate Array
  */
 function base64ToBlob(base64: string, mimeType: string): Blob {
   // Remove data URL prefix if present
   const base64Data = base64.includes(",") ? base64.split(",")[1] : base64;
-  const byteCharacters = atob(base64Data);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  const binaryString = atob(base64Data);
+  const len = binaryString.length;
+  // Direct allocation - no intermediate array needed
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
   }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
+  return new Blob([bytes], { type: mimeType });
 }
 
 /**

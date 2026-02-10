@@ -24,6 +24,6 @@
     "indentWidth": 2
   },
   "files": {
-    "ignore": ["node_modules", "dist", "vendor", "*.d.ts"]
+    "ignore": ["node_modules", "dist", "vendor", "models", "*.d.ts"]
   }
 }
