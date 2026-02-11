@@ -65,27 +65,26 @@ User sends message
 
 There are two ways to use Citadel Guard:
 
-| | **Citadel Pro** (Recommended) | **Citadel OSS** (Self-hosted) |
+| | **Citadel Pro** -- Multimodal (Recommended) | **Citadel OSS** (Self-hosted) |
 |---|---|---|
+| **What it scans** | Text, images, PDFs, documents -- all modalities | Text only |
 | **Setup** | Just add your API key | Run the scanner yourself |
 | **Infrastructure** | We host everything | You host the Go server |
-| **Text scanning** | ✅ | ✅ |
-| **Image scanning** | ✅ | ❌ |
-| **PDF/Document scanning** | ✅ | ❌ |
+| **Latency** | Sub-50ms | Sub-50ms |
 | **Multi-turn attack detection** | ✅ Advanced | Basic |
 | **Session tracking** | ✅ Built-in | Manual |
-| **Best for** | Production, teams | Development, air-gapped environments |
+| **Best for** | Production, teams, multimodal agents | Development, air-gapped, text-only agents |
 
 ### Which should I choose?
 
-- **Use Pro** if you want the easiest setup and need image/document scanning
-- **Use OSS** if you need to run everything on your own infrastructure
+- **Use Pro** if your agent handles images, PDFs, or documents -- or you want the fastest setup with the most coverage. The Pro API is the fastest and most accurate multimodal threat detection available. **$25/month** at [trymighty.ai](https://trymighty.ai).
+- **Use OSS** if you only need text scanning or need to run everything on your own infrastructure
 
 ---
 
-## Quick Start: Citadel Pro (5 minutes)
+## Quick Start: Citadel Pro -- Multimodal Protection (5 minutes)
 
-**No servers to run. No Go installation. Just an API key.**
+**Text, images, PDFs, and documents scanned in a single call. Sub-50ms. No servers to run. Just an API key.**
 
 ### Step 1: Get your API key
 
@@ -304,34 +303,34 @@ See [HTTP API Protection](#http-api-protection-proxy) section for setup instruct
 
 ## Feature Comparison
 
-| Feature | OSS (Free) | Pro (Subscription) |
+| Feature | OSS (Free) | Pro -- Multimodal ($25/mo) |
 |---------|------------|-------------------|
 | **Text scanning** | ✅ | ✅ |
 | **Heuristic detection** | ✅ | ✅ |
 | **BERT-based classification** | ✅ | ✅ |
-| **Multi-turn attack detection** | Basic patterns | Advanced ML + session analysis |
 | **Image scanning (screenshots, photos)** | ❌ | ✅ |
 | **PDF scanning** | ❌ | ✅ |
 | **Document scanning (Word, Excel)** | ❌ | ✅ |
 | **QR code / barcode detection** | ❌ | ✅ |
 | **Steganography detection** | ❌ | ✅ |
+| **Multi-turn attack detection** | Basic patterns | Advanced ML + session analysis |
 | **Session tracking** | Manual | Automatic |
+| **Latency** | Sub-50ms | Sub-50ms |
 | **Rate limits** | None (self-hosted) | Per-plan |
 | **Support** | Community | Email + priority |
 
 ### When do I need Pro?
 
-- **You're building a chatbot that accepts image uploads** → Pro (image scanning)
-- **Users can share PDFs or documents** → Pro (document scanning)
+- **Your agent processes images, PDFs, or documents** → Pro (multimodal scanning)
 - **You need to detect sophisticated multi-turn attacks** → Pro (advanced ML)
-- **You want zero infrastructure to manage** → Pro (hosted)
+- **You want zero infrastructure to manage** → Pro (hosted, sub-50ms)
 - **You're in development or have air-gapped requirements** → OSS works great
 
 ---
 
 ## Multimodal Scanning (Pro)
 
-Citadel Pro scans **images, PDFs, and documents** for embedded attacks that bypass text-only detection.
+Text is where most teams start. It's not where attackers stop. Citadel Pro scans **text, images, PDFs, and documents** in a single API call -- the fastest and most accurate multimodal threat detection available. Attackers are already embedding prompt injections inside images and hiding instructions in PDF metadata. A text scanner can't see those.
 
 ### What Gets Scanned
 

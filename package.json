@@ -1,6 +1,6 @@
 {
   "name": "@mightyai/citadel-guard-openclaw",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "description": "Citadel Guard plugin for OpenClaw - AI security protection against prompt injection, data exfiltration, and more",
   "type": "module",
   "main": "plugin/index.ts",
