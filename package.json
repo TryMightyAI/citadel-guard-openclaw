@@ -10,7 +10,12 @@
     "./metrics": "./plugin/metrics.ts",
     "./pro-api": "./plugin/pro-api.ts"
   },
-  "files": ["plugin/", "scripts/", "README.md", "CHANGELOG.md"],
+  "files": [
+    "plugin/",
+    "scripts/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "postinstall": "node scripts/install-citadel-binary.mjs || true",
     "proxy": "bun run citadel-openai-proxy.ts",
@@ -42,7 +47,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TryMightyAI/citadel-guard-openclaw.git"
+    "url": "git+https://github.com/TryMightyAI/citadel-guard-openclaw.git"
   },
   "bugs": {
     "url": "https://github.com/TryMightyAI/citadel-guard-openclaw/issues"
